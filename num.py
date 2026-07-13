@@ -9,16 +9,15 @@
 识别方式：
     OpenCV轮廓分割 + 模板匹配
 
-模板目录：
-    /sdcard/digit_templates/0.png
-    /sdcard/digit_templates/1.png
-    ...
-    /sdcard/digit_templates/9.png
+模板目录（启动时自动探测）：
+    /digit_templates
+    /sdcard/digit_templates
 """
 
 import time
 import sys
 import gc
+import os
 
 import cv2
 import ulab.numpy as np
@@ -38,6 +37,7 @@ from config import (
     DIGIT_NORMALIZED_HEIGHT as NORMALIZED_HEIGHT,
     DIGIT_NORMALIZED_MARGIN as NORMALIZED_MARGIN,
     DIGIT_NORMALIZED_WIDTH as NORMALIZED_WIDTH,
+    DIGIT_TEMPLATE_DIR_CANDIDATES as TEMPLATE_DIR_CANDIDATES,
     DIGIT_TEMPLATE_DIR as TEMPLATE_DIR,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
@@ -248,12 +248,40 @@ def prepare_template(template_image):
 # 加载0～9模板
 # ============================================================
 
+def resolve_template_dir():
+    candidate_dirs = TEMPLATE_DIR_CANDIDATES
+
+    if TEMPLATE_DIR not in candidate_dirs:
+        candidate_dirs = (TEMPLATE_DIR,) + candidate_dirs
+
+    tried_paths = []
+
+    for template_dir in candidate_dirs:
+        probe_path = "{}/0.png".format(template_dir)
+        tried_paths.append(probe_path)
+
+        try:
+            os.stat(probe_path)
+            return template_dir
+        except Exception:
+            pass
+
+    raise RuntimeError(
+        "找不到数字模板，已尝试：{}".format(
+            ", ".join(tried_paths)
+        )
+    )
+
+
 def load_templates():
     loaded_templates = []
+    template_dir = resolve_template_dir()
+
+    print("数字模板目录：{}".format(template_dir))
 
     for digit in range(10):
         template_path = "{}/{}.png".format(
-            TEMPLATE_DIR,
+            template_dir,
             digit
         )
 

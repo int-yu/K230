@@ -70,7 +70,11 @@ RECTANGLE_LOST_FRAME_LIMIT = 5
 # 数字识别参数（num.py）
 # ============================================================
 
-DIGIT_TEMPLATE_DIR = "/sdcard/digit_templates"
+DIGIT_TEMPLATE_DIR = "/digit_templates"
+DIGIT_TEMPLATE_DIR_CANDIDATES = (
+    DIGIT_TEMPLATE_DIR,
+    "/sdcard/digit_templates",
+)
 
 DIGIT_NORMALIZED_WIDTH = 48
 DIGIT_NORMALIZED_HEIGHT = 64
