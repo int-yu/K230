@@ -1,0 +1,89 @@
+"""K230 摄像头、显示和检测参数。"""
+
+
+# ============================================================
+# 共享摄像头参数
+# ============================================================
+
+CAMERA_ID = 2
+CAMERA_SOURCE_WIDTH = 1280
+CAMERA_SOURCE_HEIGHT = 960
+CAMERA_FPS = 30
+CAMERA_PIXEL_FORMAT = "RGB888"
+
+IMAGE_WIDTH = 640
+IMAGE_HEIGHT = 480
+
+# 当前画面需要同时水平镜像和垂直翻转，等效于旋转 180°。
+CAMERA_HMIRROR = True
+CAMERA_VFLIP = True
+
+
+# ============================================================
+# 显示模式
+# ============================================================
+
+DISPLAY_MODE_ST7701 = "st7701"
+DISPLAY_MODE_VIRT = "virt"
+
+
+# tangle.py：板载 3.5 寸 ST7701 屏幕
+TANGLE_DISPLAY_MODE = DISPLAY_MODE_ST7701
+TANGLE_DISPLAY_WIDTH = 800
+TANGLE_DISPLAY_HEIGHT = 480
+TANGLE_DISPLAY_FPS = 30
+TANGLE_DISPLAY_TO_IDE = False
+TANGLE_DISPLAY_X = (TANGLE_DISPLAY_WIDTH - IMAGE_WIDTH) // 2
+TANGLE_DISPLAY_Y = (TANGLE_DISPLAY_HEIGHT - IMAGE_HEIGHT) // 2
+
+
+# num.py：CanMV IDE 虚拟显示
+NUM_DISPLAY_MODE = DISPLAY_MODE_VIRT
+NUM_DISPLAY_WIDTH = IMAGE_WIDTH
+NUM_DISPLAY_HEIGHT = IMAGE_HEIGHT
+NUM_DISPLAY_FPS = 30
+NUM_DISPLAY_TO_IDE = True
+NUM_DISPLAY_QUALITY = 80
+NUM_DISPLAY_X = 0
+NUM_DISPLAY_Y = 0
+
+
+# ============================================================
+# 矩形检测参数（tangle.py）
+# ============================================================
+
+RECTANGLE_CANNY_LOW = 50
+RECTANGLE_CANNY_HIGH = 150
+
+RECTANGLE_MIN_AREA = 1500
+RECTANGLE_APPROX_RATIO = 0.03
+RECTANGLE_MIN_WIDTH = 30
+RECTANGLE_MIN_HEIGHT = 30
+RECTANGLE_MAX_COUNT = 20
+RECTANGLE_MIN_CONFIDENCE = 0.55
+
+# 连续多少帧未检测到目标后，才判定目标丢失。
+RECTANGLE_LOST_FRAME_LIMIT = 5
+
+
+# ============================================================
+# 数字识别参数（num.py）
+# ============================================================
+
+DIGIT_TEMPLATE_DIR = "/sdcard/digit_templates"
+
+DIGIT_NORMALIZED_WIDTH = 48
+DIGIT_NORMALIZED_HEIGHT = 64
+DIGIT_NORMALIZED_MARGIN = 4
+
+DIGIT_MIN_AREA = 150
+DIGIT_MAX_AREA = 50000
+DIGIT_MIN_WIDTH = 5
+DIGIT_MIN_HEIGHT = 20
+DIGIT_MAX_WIDTH = 250
+DIGIT_MAX_HEIGHT = 400
+DIGIT_MIN_ASPECT_RATIO = 0.05
+DIGIT_MAX_ASPECT_RATIO = 1.40
+DIGIT_MAX_COUNT = 12
+
+DIGIT_MATCH_THRESHOLD = 0.35
