@@ -1,7 +1,7 @@
 __pycache__/
 _digit_templates/
 *.py[cod]
-
+pic/
 .vscode/
 .env
 .env.*

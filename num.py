@@ -1,414 +1,250 @@
+"""K230 打印数字识别模块，以及可直接运行的摄像头示例。
 
-"""
-实验名称：OpenCV 打印数字识别
-开发板：01Studio CanMV K230 V3P0
-固件：CanMV v1.8-2
-摄像头：CSI2，Sensor id=2
-显示方式：CanMV IDE
+模块接口与 color.py、tangle.py 保持一致：
 
-识别方式：
-    OpenCV轮廓分割 + 模板匹配
+    detector = DigitDetector()
+    result = detector.process(frame)
 
-模板目录（启动时自动探测）：
-    /digit_templates
-    /sdcard/digit_templates
+没有候选数字时返回 None；检测到候选时返回包含整串文本和逐位结果的字典。
 """
 
-import time
-import sys
 import gc
 import os
+import time
 
 import cv2
-import ulab.numpy as np
 
-from camera_io import CameraIO, DISPLAY_TARGET_IDE
+try:
+    import ulab.numpy as np
+except ImportError:
+    import numpy as np
+
 from config import (
-    DIGIT_MATCH_THRESHOLD as MATCH_THRESHOLD,
-    DIGIT_MAX_AREA as MAX_DIGIT_AREA,
-    DIGIT_MAX_ASPECT_RATIO as MAX_ASPECT_RATIO,
-    DIGIT_MAX_COUNT as MAX_DIGIT_COUNT,
-    DIGIT_MAX_HEIGHT as MAX_DIGIT_HEIGHT,
-    DIGIT_MAX_WIDTH as MAX_DIGIT_WIDTH,
-    DIGIT_MIN_AREA as MIN_DIGIT_AREA,
-    DIGIT_MIN_ASPECT_RATIO as MIN_ASPECT_RATIO,
-    DIGIT_MIN_HEIGHT as MIN_DIGIT_HEIGHT,
-    DIGIT_MIN_WIDTH as MIN_DIGIT_WIDTH,
-    DIGIT_NORMALIZED_HEIGHT as NORMALIZED_HEIGHT,
-    DIGIT_NORMALIZED_MARGIN as NORMALIZED_MARGIN,
-    DIGIT_NORMALIZED_WIDTH as NORMALIZED_WIDTH,
-    DIGIT_TEMPLATE_DIR_CANDIDATES as TEMPLATE_DIR_CANDIDATES,
-    DIGIT_TEMPLATE_DIR as TEMPLATE_DIR,
-    IMAGE_HEIGHT,
-    IMAGE_WIDTH,
+    DIGIT_BLUR_KERNEL_SIZE,
+    DIGIT_DRAW_RECOGNIZED_COLOR,
+    DIGIT_DRAW_SUMMARY,
+    DIGIT_DRAW_TEXT_COLOR,
+    DIGIT_DRAW_THICKNESS,
+    DIGIT_DRAW_UNKNOWN_COLOR,
+    DIGIT_MATCH_THRESHOLD,
+    DIGIT_MAX_AREA,
+    DIGIT_MAX_ASPECT_RATIO,
+    DIGIT_MAX_COUNT,
+    DIGIT_MAX_HEIGHT,
+    DIGIT_MAX_WIDTH,
+    DIGIT_MIN_AREA,
+    DIGIT_MIN_ASPECT_RATIO,
+    DIGIT_MIN_HEIGHT,
+    DIGIT_MIN_WIDTH,
+    DIGIT_MORPH_KERNEL_SIZE,
+    DIGIT_NORMALIZED_HEIGHT,
+    DIGIT_NORMALIZED_MARGIN,
+    DIGIT_NORMALIZED_WIDTH,
+    DIGIT_ROI_MARGIN_DIVISOR,
+    DIGIT_ROI_MIN_MARGIN,
+    DIGIT_TEMPLATE_DIR,
+    DIGIT_TEMPLATE_DIR_CANDIDATES,
 )
 
 
-camera = None
-templates = []
+def _ticks_ms():
+    try:
+        return time.ticks_ms()
+    except AttributeError:
+        return int(time.time() * 1000)
 
 
-# ============================================================
-# 兼容不同cv2版本的findContours返回格式
-# ============================================================
+def _ticks_diff(new_value, old_value):
+    try:
+        return time.ticks_diff(new_value, old_value)
+    except AttributeError:
+        return new_value - old_value
+
 
 def find_contours(binary_image):
+    """兼容 OpenCV 两种 findContours 返回格式。"""
     result = cv2.findContours(
         binary_image,
         cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
+        cv2.CHAIN_APPROX_SIMPLE,
     )
-
-    # OpenCV常见返回：
-    # contours, hierarchy
     if len(result) == 2:
-        return result[0], result[1]
+        return result[0]
+    return result[1]
 
-    # 某些版本返回：
-    # image, contours, hierarchy
-    return result[1], result[2]
-
-
-# ============================================================
-# 裁剪二值图中真正的数字区域
-# ============================================================
 
 def crop_foreground(binary_image):
-    """
-    输入：
-        黑色背景、白色数字的二值图。
-
-    返回：
-        只包含数字主体的裁剪图。
-    """
-
-    contours, hierarchy = find_contours(binary_image)
-
+    """裁出黑底白字二值图中的全部前景笔画。"""
+    contours = find_contours(binary_image)
     if contours is None or len(contours) == 0:
         return None
 
-    # 将所有白色轮廓合并起来计算总外接范围。
-    #
-    # 不能只取最大轮廓，因为数字4、5等在某些字体和
-    # 二值化结果中可能被分成多个部分。
-    min_x = binary_image.shape[1]
-    min_y = binary_image.shape[0]
+    min_x = int(binary_image.shape[1])
+    min_y = int(binary_image.shape[0])
     max_x = 0
     max_y = 0
-
     found = False
 
     for contour in contours:
-        area = cv2.contourArea(contour)
-
-        if area < 2:
+        if cv2.contourArea(contour) < 2:
             continue
-
         x, y, width, height = cv2.boundingRect(contour)
-
-        if x < min_x:
-            min_x = x
-
-        if y < min_y:
-            min_y = y
-
-        if x + width > max_x:
-            max_x = x + width
-
-        if y + height > max_y:
-            max_y = y + height
-
+        min_x = min(min_x, x)
+        min_y = min(min_y, y)
+        max_x = max(max_x, x + width)
+        max_y = max(max_y, y + height)
         found = True
 
-    if not found:
+    if not found or max_x <= min_x or max_y <= min_y:
         return None
-
-    if max_x <= min_x or max_y <= min_y:
-        return None
-
-    cropped = binary_image[
-        min_y:max_y,
-        min_x:max_x
-    ]
-
-    return cropped
+    return binary_image[min_y:max_y, min_x:max_x]
 
 
-# ============================================================
-# 将数字等比例缩放并居中
-# ============================================================
-
-def normalize_digit(binary_image):
-    """
-    将任意大小的数字区域，等比例缩放后放到固定画布中。
-
-    输入：
-        黑色背景、白色数字。
-
-    输出：
-        NORMALIZED_WIDTH × NORMALIZED_HEIGHT 的标准数字图。
-    """
-
+def normalize_digit(
+    binary_image,
+    normalized_width=DIGIT_NORMALIZED_WIDTH,
+    normalized_height=DIGIT_NORMALIZED_HEIGHT,
+    normalized_margin=DIGIT_NORMALIZED_MARGIN,
+):
+    """保持宽高比，把数字前景居中到固定大小的黑色画布。"""
     cropped = crop_foreground(binary_image)
-
     if cropped is None:
         return None
 
-    source_height = cropped.shape[0]
-    source_width = cropped.shape[1]
-
+    source_height = int(cropped.shape[0])
+    source_width = int(cropped.shape[1])
+    usable_width = normalized_width - normalized_margin * 2
+    usable_height = normalized_height - normalized_margin * 2
     if source_width <= 0 or source_height <= 0:
         return None
+    if usable_width <= 0 or usable_height <= 0:
+        raise ValueError("数字标准画布小于或等于边距")
 
-    usable_width = NORMALIZED_WIDTH - NORMALIZED_MARGIN * 2
-    usable_height = NORMALIZED_HEIGHT - NORMALIZED_MARGIN * 2
-
-    scale_width = usable_width / source_width
-    scale_height = usable_height / source_height
-
-    # 使用较小的比例，保持原始宽高比
-    scale = min(scale_width, scale_height)
-
-    new_width = int(source_width * scale)
-    new_height = int(source_height * scale)
-
-    if new_width < 1:
-        new_width = 1
-
-    if new_height < 1:
-        new_height = 1
-
+    scale = min(
+        usable_width / float(source_width),
+        usable_height / float(source_height),
+    )
+    new_width = max(1, int(source_width * scale))
+    new_height = max(1, int(source_height * scale))
     resized = cv2.resize(
         cropped,
         (new_width, new_height),
-        interpolation=cv2.INTER_AREA
+        interpolation=cv2.INTER_AREA,
     )
 
-    # 创建黑色背景画布
     canvas = np.zeros(
-        (NORMALIZED_HEIGHT, NORMALIZED_WIDTH),
-        dtype=np.uint8
+        (normalized_height, normalized_width),
+        dtype=np.uint8,
     )
-
-    offset_x = (NORMALIZED_WIDTH - new_width) // 2
-    offset_y = (NORMALIZED_HEIGHT - new_height) // 2
-
+    offset_x = (normalized_width - new_width) // 2
+    offset_y = (normalized_height - new_height) // 2
     canvas[
         offset_y:offset_y + new_height,
-        offset_x:offset_x + new_width
+        offset_x:offset_x + new_width,
     ] = resized
-
     return canvas
 
 
-# ============================================================
-# 预处理模板
-# ============================================================
-
-def prepare_template(template_image):
-    """
-    将电脑生成的白底黑字模板处理为：
-        黑色背景、白色数字、固定尺寸。
-    """
-
+def prepare_template(
+    template_image,
+    normalized_width=DIGIT_NORMALIZED_WIDTH,
+    normalized_height=DIGIT_NORMALIZED_HEIGHT,
+    normalized_margin=DIGIT_NORMALIZED_MARGIN,
+):
+    """把白底黑字模板转换为标准的黑底白字模板。"""
     if template_image is None:
         return None
-
-    # cv2.imread通常返回BGR彩色图
     if len(template_image.shape) == 3:
-        gray = cv2.cvtColor(
-            template_image,
-            cv2.COLOR_BGR2GRAY
-        )
+        gray = cv2.cvtColor(template_image, cv2.COLOR_BGR2GRAY)
     else:
         gray = template_image
-
-    # 白底黑字变为黑底白字
-    threshold_value, binary = cv2.threshold(
+    _, binary = cv2.threshold(
         gray,
         0,
         255,
-        cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU
+        cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
+    )
+    return normalize_digit(
+        binary,
+        normalized_width,
+        normalized_height,
+        normalized_margin,
     )
 
-    normalized = normalize_digit(binary)
 
-    return normalized
-
-
-# ============================================================
-# 加载0～9模板
-# ============================================================
-
-def resolve_template_dir():
-    candidate_dirs = TEMPLATE_DIR_CANDIDATES
-
-    if TEMPLATE_DIR not in candidate_dirs:
-        candidate_dirs = (TEMPLATE_DIR,) + candidate_dirs
+def resolve_template_dir(template_dir=None, candidate_dirs=None):
+    """返回包含 0.png 的模板目录；找不到时列出全部尝试路径。"""
+    if template_dir is not None:
+        directories = (template_dir,)
+    else:
+        directories = tuple(
+            candidate_dirs
+            if candidate_dirs is not None
+            else DIGIT_TEMPLATE_DIR_CANDIDATES
+        )
+        if DIGIT_TEMPLATE_DIR not in directories:
+            directories = (DIGIT_TEMPLATE_DIR,) + directories
 
     tried_paths = []
-
-    for template_dir in candidate_dirs:
-        probe_path = "{}/0.png".format(template_dir)
+    for directory in directories:
+        probe_path = "{}/0.png".format(directory.rstrip("/"))
         tried_paths.append(probe_path)
-
         try:
             os.stat(probe_path)
-            return template_dir
+            return directory.rstrip("/")
         except Exception:
             pass
 
     raise RuntimeError(
-        "找不到数字模板，已尝试：{}".format(
-            ", ".join(tried_paths)
-        )
+        "找不到数字模板，已尝试：{}".format(", ".join(tried_paths))
     )
 
 
-def load_templates():
+def load_templates(
+    template_dir=None,
+    normalized_width=DIGIT_NORMALIZED_WIDTH,
+    normalized_height=DIGIT_NORMALIZED_HEIGHT,
+    normalized_margin=DIGIT_NORMALIZED_MARGIN,
+    verbose=False,
+):
+    """一次性加载并预处理 0 到 9 的模板。"""
+    resolved_dir = resolve_template_dir(template_dir)
     loaded_templates = []
-    template_dir = resolve_template_dir()
-
-    print("数字模板目录：{}".format(template_dir))
+    if verbose:
+        print("数字模板目录：{}".format(resolved_dir))
 
     for digit in range(10):
-        template_path = "{}/{}.png".format(
-            template_dir,
-            digit
-        )
-
+        template_path = "{}/{}.png".format(resolved_dir, digit)
         try:
             os.stat(template_path)
         except Exception:
-            raise RuntimeError(
-                "找不到数字模板：{}".format(template_path)
-            )
+            raise RuntimeError("找不到数字模板：{}".format(template_path))
 
-        template_image = cv2.imread(
-            template_path,
-            cv2.IMREAD_COLOR
-        )
-
+        template_image = cv2.imread(template_path, cv2.IMREAD_COLOR)
         if template_image is None:
-            raise RuntimeError(
-                "无法读取数字模板：{}".format(template_path)
-            )
+            raise RuntimeError("无法读取数字模板：{}".format(template_path))
 
         normalized_template = prepare_template(
-            template_image
+            template_image,
+            normalized_width,
+            normalized_height,
+            normalized_margin,
         )
-
         if normalized_template is None:
-            raise RuntimeError(
-                "数字模板处理失败：{}".format(template_path)
-            )
-
+            raise RuntimeError("数字模板处理失败：{}".format(template_path))
         loaded_templates.append(normalized_template)
 
-        print("模板{}加载完成".format(digit))
-
+        if verbose:
+            print("模板{}加载完成".format(digit))
         del template_image
 
     gc.collect()
+    return tuple(loaded_templates), resolved_dir
 
-    return loaded_templates
-
-
-# ============================================================
-# 模板匹配识别
-# ============================================================
-
-def recognize_digit(normalized_digit):
-    """
-    将当前数字与0～9模板逐一比较。
-
-    返回：
-        best_digit：最相似的数字
-        best_score：最高相似度
-    """
-
-    best_digit = -1
-    best_score = -1.0
-
-    for digit in range(10):
-        result = cv2.matchTemplate(
-            normalized_digit,
-            templates[digit],
-            cv2.TM_CCOEFF_NORMED
-        )
-
-        min_value, max_value, min_location, max_location = \
-            cv2.minMaxLoc(result)
-
-        if max_value > best_score:
-            best_score = max_value
-            best_digit = digit
-
-        del result
-
-    if best_score < MATCH_THRESHOLD:
-        return -1, best_score
-
-    return best_digit, best_score
-
-
-# ============================================================
-# 判断轮廓是否可能是数字
-# ============================================================
-
-def valid_digit_box(x, y, width, height, area):
-    if area < MIN_DIGIT_AREA:
-        return False
-
-    if area > MAX_DIGIT_AREA:
-        return False
-
-    if width < MIN_DIGIT_WIDTH:
-        return False
-
-    if height < MIN_DIGIT_HEIGHT:
-        return False
-
-    if width > MAX_DIGIT_WIDTH:
-        return False
-
-    if height > MAX_DIGIT_HEIGHT:
-        return False
-
-    if height <= 0:
-        return False
-
-    aspect_ratio = width / height
-
-    if aspect_ratio < MIN_ASPECT_RATIO:
-        return False
-
-    if aspect_ratio > MAX_ASPECT_RATIO:
-        return False
-
-    if x < 0 or y < 0:
-        return False
-
-    if x + width > IMAGE_WIDTH:
-        return False
-
-    if y + height > IMAGE_HEIGHT:
-        return False
-
-    return True
-
-
-# ============================================================
-# 判断两个框是否存在包含关系
-#
-# 数字8、0、6、9内部可能产生额外轮廓。
-# RETR_EXTERNAL通常已经能避免，但这里再加一层保护。
-# ============================================================
 
 def box_is_inside(box_a, box_b):
     ax, ay, aw, ah = box_a[0], box_a[1], box_a[2], box_a[3]
     bx, by, bw, bh = box_b[0], box_b[1], box_b[2], box_b[3]
-
     return (
         ax >= bx and
         ay >= by and
@@ -418,354 +254,423 @@ def box_is_inside(box_a, box_b):
 
 
 def remove_contained_boxes(boxes):
+    """删除完全包含在更大候选框中的内部轮廓。"""
     filtered = []
-
     for index_a in range(len(boxes)):
         contained = False
-
         for index_b in range(len(boxes)):
             if index_a == index_b:
                 continue
-
             if box_is_inside(boxes[index_a], boxes[index_b]):
                 area_a = boxes[index_a][2] * boxes[index_a][3]
                 area_b = boxes[index_b][2] * boxes[index_b][3]
-
                 if area_a < area_b:
                     contained = True
                     break
-
         if not contained:
             filtered.append(boxes[index_a])
-
     return filtered
 
 
-# ============================================================
-# 主程序
-# ============================================================
+class DigitDetector:
+    """基于轮廓分割和模板匹配的打印数字检测器。"""
 
-try:
-    print("================================")
-    print("K230 OpenCV打印数字识别")
-    print("摄像头：CSI2")
-    print("显示方式：CanMV IDE")
-    print("================================")
+    def __init__(
+        self,
+        template_dir=None,
+        match_threshold=DIGIT_MATCH_THRESHOLD,
+        normalized_width=DIGIT_NORMALIZED_WIDTH,
+        normalized_height=DIGIT_NORMALIZED_HEIGHT,
+        normalized_margin=DIGIT_NORMALIZED_MARGIN,
+        min_area=DIGIT_MIN_AREA,
+        max_area=DIGIT_MAX_AREA,
+        min_width=DIGIT_MIN_WIDTH,
+        max_width=DIGIT_MAX_WIDTH,
+        min_height=DIGIT_MIN_HEIGHT,
+        max_height=DIGIT_MAX_HEIGHT,
+        min_aspect_ratio=DIGIT_MIN_ASPECT_RATIO,
+        max_aspect_ratio=DIGIT_MAX_ASPECT_RATIO,
+        max_count=DIGIT_MAX_COUNT,
+        blur_kernel_size=DIGIT_BLUR_KERNEL_SIZE,
+        morph_kernel_size=DIGIT_MORPH_KERNEL_SIZE,
+        roi_margin_divisor=DIGIT_ROI_MARGIN_DIVISOR,
+        roi_min_margin=DIGIT_ROI_MIN_MARGIN,
+        draw_recognized_color=DIGIT_DRAW_RECOGNIZED_COLOR,
+        draw_unknown_color=DIGIT_DRAW_UNKNOWN_COLOR,
+        draw_text_color=DIGIT_DRAW_TEXT_COLOR,
+        draw_thickness=DIGIT_DRAW_THICKNESS,
+        draw_summary=DIGIT_DRAW_SUMMARY,
+        verbose=False,
+    ):
+        if normalized_width <= 0 or normalized_height <= 0:
+            raise ValueError("数字标准尺寸必须大于 0")
+        if normalized_margin < 0:
+            raise ValueError("数字标准边距不能小于 0")
+        if min_area <= 0 or max_area < min_area:
+            raise ValueError("数字面积范围无效")
+        if min_width <= 0 or max_width < min_width:
+            raise ValueError("数字宽度范围无效")
+        if min_height <= 0 or max_height < min_height:
+            raise ValueError("数字高度范围无效")
+        if min_aspect_ratio <= 0 or max_aspect_ratio < min_aspect_ratio:
+            raise ValueError("数字宽高比范围无效")
+        if max_count <= 0:
+            raise ValueError("最大数字数量必须大于 0")
+        if blur_kernel_size <= 0 or blur_kernel_size % 2 == 0:
+            raise ValueError("高斯核尺寸必须是正奇数")
+        if morph_kernel_size <= 0:
+            raise ValueError("形态学核尺寸必须大于 0")
+        if roi_margin_divisor <= 0 or roi_min_margin < 0:
+            raise ValueError("数字 ROI 边距参数无效")
+        if draw_thickness <= 0:
+            raise ValueError("绘制线宽必须大于 0")
 
-    # --------------------------------------------------------
-    # 加载模板
-    # --------------------------------------------------------
-
-    templates = load_templates()
-
-    print("全部数字模板加载完成")
-
-    camera = CameraIO(display_target=DISPLAY_TARGET_IDE)
-    camera.initialize()
-
-    clock = time.clock()
-    frame_count = 0
-
-    print("初始化完成，请将打印数字放到摄像头前")
-
-    # ========================================================
-    # 主循环
-    # ========================================================
-
-    while True:
-        clock.tick()
-
-        # ----------------------------------------------------
-        # 获取摄像头图像
-        # ----------------------------------------------------
-
-        img = camera.snapshot()
-        frame = img.to_numpy_ref()
-
-        # ----------------------------------------------------
-        # RGB转灰度
-        # ----------------------------------------------------
-
-        gray = cv2.cvtColor(
-            frame,
-            cv2.COLOR_RGB2GRAY
+        self.match_threshold = match_threshold
+        self.normalized_width = normalized_width
+        self.normalized_height = normalized_height
+        self.normalized_margin = normalized_margin
+        self.min_area = min_area
+        self.max_area = max_area
+        self.min_width = min_width
+        self.max_width = max_width
+        self.min_height = min_height
+        self.max_height = max_height
+        self.min_aspect_ratio = min_aspect_ratio
+        self.max_aspect_ratio = max_aspect_ratio
+        self.max_count = max_count
+        self.blur_kernel_size = blur_kernel_size
+        self.roi_margin_divisor = roi_margin_divisor
+        self.roi_min_margin = roi_min_margin
+        self.draw_recognized_color = draw_recognized_color
+        self.draw_unknown_color = draw_unknown_color
+        self.draw_text_color = draw_text_color
+        self.draw_thickness = draw_thickness
+        self.draw_summary = draw_summary
+        self.morph_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (morph_kernel_size, morph_kernel_size),
         )
 
-        # ----------------------------------------------------
-        # 轻微模糊，减少噪声
-        # ----------------------------------------------------
+        self.templates, self.template_dir = load_templates(
+            template_dir,
+            normalized_width,
+            normalized_height,
+            normalized_margin,
+            verbose,
+        )
+        self.last_threshold = 0.0
+        self.last_contour_count = 0
+        self.last_detection_ms = 0
 
+    def _valid_digit_box(
+        self,
+        x,
+        y,
+        width,
+        height,
+        area,
+        image_width,
+        image_height,
+    ):
+        if area < self.min_area or area > self.max_area:
+            return False
+        if width < self.min_width or width > self.max_width:
+            return False
+        if height < self.min_height or height > self.max_height:
+            return False
+        if height <= 0:
+            return False
+        aspect_ratio = width / float(height)
+        if not self.min_aspect_ratio <= aspect_ratio <= self.max_aspect_ratio:
+            return False
+        return (
+            x >= 0 and
+            y >= 0 and
+            x + width <= image_width and
+            y + height <= image_height
+        )
+
+    def _recognize(self, normalized_digit):
+        best_digit = -1
+        best_score = -1.0
+        for digit in range(10):
+            match_result = cv2.matchTemplate(
+                normalized_digit,
+                self.templates[digit],
+                cv2.TM_CCOEFF_NORMED,
+            )
+            _, max_value, _, _ = cv2.minMaxLoc(match_result)
+            if max_value > best_score:
+                best_score = max_value
+                best_digit = digit
+            del match_result
+
+        if best_score < self.match_threshold:
+            return -1, best_score
+        return best_digit, best_score
+
+    def detect(self, frame):
+        """识别一帧并返回整串结果；没有数字候选时返回 None。"""
+        start_ms = _ticks_ms()
+        image_height = int(frame.shape[0])
+        image_width = int(frame.shape[1])
+
+        if len(frame.shape) == 2:
+            gray = frame
+        else:
+            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         blurred = cv2.GaussianBlur(
             gray,
-            (5, 5),
-            0
+            (self.blur_kernel_size, self.blur_kernel_size),
+            0,
         )
-
-        # ----------------------------------------------------
-        # Otsu自动二值化
-        #
-        # 白纸上的黑字会变成：
-        #   黑色背景
-        #   白色数字
-        # ----------------------------------------------------
-
-        threshold_value, binary = cv2.threshold(
+        self.last_threshold, binary = cv2.threshold(
             blurred,
             0,
             255,
-            cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU
+            cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
         )
-
-        # ----------------------------------------------------
-        # 闭运算连接数字中可能断开的笔画
-        # ----------------------------------------------------
-
-        kernel = cv2.getStructuringElement(
-            cv2.MORPH_RECT,
-            (3, 3)
-        )
-
         clean_binary = cv2.morphologyEx(
             binary,
             cv2.MORPH_CLOSE,
-            kernel
+            self.morph_kernel,
         )
+        contours = find_contours(clean_binary)
+        self.last_contour_count = len(contours)
 
-        # ----------------------------------------------------
-        # 查找数字轮廓
-        # ----------------------------------------------------
-
-        contours, hierarchy = find_contours(
-            clean_binary
-        )
-
-        digit_boxes = []
-
+        boxes = []
         for contour in contours:
             area = cv2.contourArea(contour)
-
-            x, y, width, height = cv2.boundingRect(
-                contour
-            )
-
-            if not valid_digit_box(
+            x, y, width, height = cv2.boundingRect(contour)
+            if self._valid_digit_box(
                 x,
                 y,
                 width,
                 height,
-                area
+                area,
+                image_width,
+                image_height,
             ):
-                continue
+                boxes.append((x, y, width, height, area))
 
-            digit_boxes.append(
-                (x, y, width, height, area)
+        boxes = remove_contained_boxes(boxes)
+        boxes.sort(key=lambda box: box[0])
+        boxes = boxes[:self.max_count]
+
+        digits = []
+        for x, y, width, height, area in boxes:
+            margin_x = max(
+                self.roi_min_margin,
+                width // self.roi_margin_divisor,
             )
-
-        # 删除被其他框完全包含的小框
-        digit_boxes = remove_contained_boxes(
-            digit_boxes
-        )
-
-        # 按横坐标从左到右排序
-        digit_boxes.sort(
-            key=lambda box: box[0]
-        )
-
-        if len(digit_boxes) > MAX_DIGIT_COUNT:
-            digit_boxes = digit_boxes[:MAX_DIGIT_COUNT]
-
-        recognized_text = ""
-
-        # ----------------------------------------------------
-        # 逐个识别数字
-        # ----------------------------------------------------
-
-        for box in digit_boxes:
-            x = box[0]
-            y = box[1]
-            width = box[2]
-            height = box[3]
-
-            # 给数字四周增加少量边距
-            margin_x = max(2, width // 12)
-            margin_y = max(2, height // 12)
-
+            margin_y = max(
+                self.roi_min_margin,
+                height // self.roi_margin_divisor,
+            )
             roi_left = max(0, x - margin_x)
             roi_top = max(0, y - margin_y)
-
-            roi_right = min(
-                IMAGE_WIDTH,
-                x + width + margin_x
-            )
-
-            roi_bottom = min(
-                IMAGE_HEIGHT,
-                y + height + margin_y
-            )
-
-            if roi_right <= roi_left:
+            roi_right = min(image_width, x + width + margin_x)
+            roi_bottom = min(image_height, y + height + margin_y)
+            if roi_right <= roi_left or roi_bottom <= roi_top:
                 continue
 
-            if roi_bottom <= roi_top:
-                continue
-
-            # 从二值图中裁剪当前数字
-            digit_roi = clean_binary[
-                roi_top:roi_bottom,
-                roi_left:roi_right
-            ]
-
+            digit_roi = clean_binary[roi_top:roi_bottom, roi_left:roi_right]
             normalized_digit = normalize_digit(
-                digit_roi
+                digit_roi,
+                self.normalized_width,
+                self.normalized_height,
+                self.normalized_margin,
             )
-
             if normalized_digit is None:
                 continue
 
-            digit, score = recognize_digit(
-                normalized_digit
+            value, score = self._recognize(normalized_digit)
+            digits.append({
+                "value": value,
+                "text": str(value) if value >= 0 else "?",
+                "recognized": value >= 0,
+                "confidence": float(score),
+                "x": x,
+                "y": y,
+                "w": width,
+                "h": height,
+                "area": float(area),
+                "center_x": x + width // 2,
+                "center_y": y + height // 2,
+                "bbox": (x, y, width, height),
+            })
+
+            del normalized_digit
+            del digit_roi
+
+        self.last_detection_ms = _ticks_diff(_ticks_ms(), start_ms)
+        if not digits:
+            return None
+
+        x_min = min(item["x"] for item in digits)
+        y_min = min(item["y"] for item in digits)
+        x_max = max(item["x"] + item["w"] for item in digits)
+        y_max = max(item["y"] + item["h"] for item in digits)
+        confidence = sum(
+            min(1.0, max(0.0, item["confidence"]))
+            for item in digits
+        ) / len(digits)
+
+        return {
+            "text": "".join(item["text"] for item in digits),
+            "digits": digits,
+            "count": len(digits),
+            "recognized_count": sum(
+                1 for item in digits if item["recognized"]
+            ),
+            "confidence": confidence,
+            "center_x": (x_min + x_max) // 2,
+            "center_y": (y_min + y_max) // 2,
+            "x": x_min,
+            "y": y_min,
+            "w": x_max - x_min,
+            "h": y_max - y_min,
+            "bbox": (x_min, y_min, x_max - x_min, y_max - y_min),
+            "threshold": float(self.last_threshold),
+        }
+
+    def draw(self, frame, result):
+        """把一次 detect() 的逐位结果绘制到原始帧上。"""
+        if result is None:
+            return None
+
+        for digit in result["digits"]:
+            color = (
+                self.draw_recognized_color
+                if digit["recognized"]
+                else self.draw_unknown_color
             )
-
-            # ------------------------------------------------
-            # 根据识别结果设置显示内容
-            # ------------------------------------------------
-
-            if digit >= 0:
-                recognized_text += str(digit)
-
-                label = "{} {:.2f}".format(
-                    digit,
-                    score
-                )
-
-                box_color = (0, 255, 0)
-
-            else:
-                recognized_text += "?"
-
-                label = "? {:.2f}".format(
-                    score
-                )
-
-                box_color = (255, 0, 0)
-
-            # ------------------------------------------------
-            # 绘制数字框
-            # ------------------------------------------------
-
+            x = digit["x"]
+            y = digit["y"]
+            width = digit["w"]
+            height = digit["h"]
             cv2.rectangle(
                 frame,
                 (x, y),
                 (x + width, y + height),
-                box_color,
-                2
+                color,
+                self.draw_thickness,
             )
-
-            # 文字优先显示在框上方
             text_y = y - 8
-
             if text_y < 20:
                 text_y = y + 22
-
-            # 显示数字和匹配分数
             cv2.putText(
                 frame,
-                label,
+                "{} {:.2f}".format(
+                    digit["text"],
+                    digit["confidence"],
+                ),
                 (x, text_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
-                box_color,
-                2
+                color,
+                self.draw_thickness,
             )
 
-            del digit_roi
-            del normalized_digit
+        if self.draw_summary:
+            cv2.putText(
+                frame,
+                "Digits: {}".format(result["text"]),
+                (5, 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                self.draw_text_color,
+                self.draw_thickness,
+            )
+        return result
 
-        # ----------------------------------------------------
-        # 显示整串结果
-        # ----------------------------------------------------
+    def process(self, frame, draw=True):
+        """识别一帧；默认同时绘制数字框、结果和置信度。"""
+        result = self.detect(frame)
+        if draw and result is not None:
+            self.draw(frame, result)
+        return result
 
-        cv2.putText(
-            frame,
-            "Digits: {}".format(recognized_text),
-            (5, 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.75,
-            (255, 255, 0),
-            2
-        )
 
-        cv2.putText(
-            frame,
-            "FPS: {:.1f}".format(clock.fps()),
-            (5, 58),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (255, 255, 255),
-            2
-        )
+def run_digit_demo():
+    """直接运行 num.py 时使用的完整摄像头识别示例。"""
+    import sys
 
-        cv2.putText(
-            frame,
-            "Count: {}".format(len(digit_boxes)),
-            (5, 86),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (0, 255, 0),
-            2
-        )
+    from camera_io import CameraIO, DISPLAY_TARGET_IDE
 
-        # ----------------------------------------------------
-        # 输出到CanMV IDE
-        # ----------------------------------------------------
+    camera = None
+    detector = None
+    try:
+        print("================================")
+        print("K230 OpenCV打印数字识别")
+        print("摄像头：CSI2")
+        print("显示方式：CanMV IDE")
+        print("================================")
 
-        camera.show_image(img)
+        detector = DigitDetector(verbose=True)
+        camera = CameraIO(display_target=DISPLAY_TARGET_IDE)
+        camera.initialize()
+        clock = time.clock()
+        frame_count = 0
+        print("初始化完成，请将打印数字放到摄像头前")
 
-        frame_count += 1
+        while True:
+            clock.tick()
+            image = camera.snapshot()
+            frame = image.to_numpy_ref()
+            result = detector.process(frame)
 
-        if frame_count % 30 == 0:
-            print(
-                "FPS: {:.2f}, Digits: {}, Count: {}".format(
-                    clock.fps(),
-                    recognized_text,
-                    len(digit_boxes)
+            cv2.putText(
+                frame,
+                "FPS: {:.1f}".format(clock.fps()),
+                (5, 58),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 255),
+                2,
+            )
+            count = result["count"] if result is not None else 0
+            cv2.putText(
+                frame,
+                "Count: {}".format(count),
+                (5, 86),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 255, 0),
+                2,
+            )
+            camera.show_image(image)
+            frame_count += 1
+
+            if frame_count % 30 == 0:
+                text = result["text"] if result is not None else ""
+                print(
+                    "FPS: {:.2f}, Digits: {}, Count: {}".format(
+                        clock.fps(),
+                        text,
+                        count,
+                    )
                 )
-            )
 
-        # ----------------------------------------------------
-        # 释放当前帧临时对象
-        # ----------------------------------------------------
+            del frame
+            del image
+            if frame_count % 30 == 0:
+                gc.collect()
 
-        del hierarchy
-        del contours
-        del digit_boxes
-        del clean_binary
-        del binary
-        del kernel
-        del blurred
-        del gray
-        del frame
-        del img
+    except KeyboardInterrupt:
+        print("用户停止程序")
+    except Exception as error:
+        print("程序发生错误")
+        sys.print_exception(error)
+    finally:
+        print("正在释放资源")
+        if camera is not None:
+            camera.deinitialize()
+        if detector is not None:
+            detector.templates = ()
+        gc.collect()
+        print("程序结束")
 
-        if frame_count % 30 == 0:
-            gc.collect()
 
-
-except KeyboardInterrupt:
-    print("用户停止程序")
-
-except Exception as error:
-    print("程序发生错误")
-    sys.print_exception(error)
-
-finally:
-    print("正在释放资源")
-
-    if camera is not None:
-        camera.deinitialize()
-
-    templates = []
-
-    gc.collect()
-
-    print("程序结束")
+if __name__ == "__main__":
+    run_digit_demo()
