@@ -20,14 +20,15 @@ CAMERA_VFLIP = True
 
 
 # ============================================================
-# 方框追踪串口参数（tangle.py）
+# 串口参数（uart_io.py）
 # ============================================================
 
-# 01Studio CanMV K230：UART1 TX=GPIO3，RX=GPIO4。
-TRACK_UART_ID = 1
-TRACK_UART_TX_PIN = 3
-TRACK_UART_RX_PIN = 4
-TRACK_UART_BAUDRATE = 115200
+# 默认使用 UART1。K230 TX 接单片机 RX，K230 RX 接单片机 TX。
+UART_ID = 1
+UART_TX_PIN = 3
+UART_RX_PIN = 4
+UART_BAUDRATE = 115200
+UART_PACKET_PREFIX = "T"
 
 
 # ============================================================
@@ -112,9 +113,16 @@ RECTANGLE_LOST_FRAME_LIMIT = 5
 
 # ColorSpotDetector() 不传参数时使用这些默认值。
 COLOR_TARGET = "red"
-COLOR_MIN_AREA = 8
+COLOR_MIN_AREA = 2
 COLOR_MAX_AREA = None
 COLOR_MIN_CONFIDENCE = 0.0
+
+# 将紧邻彩色区域的低饱和高亮像素并入目标，用于补全过曝发白的光点中心。
+# 只在彩色掩膜附近接受高亮，避免把画面中所有白色区域都当作目标。
+COLOR_INCLUDE_HIGHLIGHT = True
+COLOR_HIGHLIGHT_MAX_SATURATION = 90
+COLOR_HIGHLIGHT_MIN_VALUE = 220
+COLOR_HIGHLIGHT_KERNEL_SIZE = 7
 
 # OpenCV HSV：H 为 0..179，S/V 为 0..255。
 # 红色跨越 H 的首尾，因此需要两个范围。

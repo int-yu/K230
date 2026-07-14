@@ -34,6 +34,10 @@ from config import (
     COLOR_DRAW_COLOR,
     COLOR_DRAW_CROSS_SIZE,
     COLOR_DRAW_RADIUS,
+    COLOR_HIGHLIGHT_KERNEL_SIZE,
+    COLOR_HIGHLIGHT_MAX_SATURATION,
+    COLOR_HIGHLIGHT_MIN_VALUE,
+    COLOR_INCLUDE_HIGHLIGHT,
     COLOR_MAX_AREA,
     COLOR_MIN_AREA,
     COLOR_MIN_CONFIDENCE,
@@ -97,6 +101,27 @@ def _validate_detector_limits(min_area, max_area, min_confidence):
         raise ValueError("min_confidence 必须在 0..1")
 
 
+def _make_highlight_kernel(
+    include_highlight,
+    max_saturation,
+    min_value,
+    kernel_size,
+):
+    """校验高亮补全参数，并只在启用时创建一次形态学核。"""
+    if max_saturation < 0 or max_saturation > 255:
+        raise ValueError("highlight_max_saturation 必须在 0..255")
+    if min_value < 0 or min_value > 255:
+        raise ValueError("highlight_min_value 必须在 0..255")
+    if kernel_size <= 0 or kernel_size % 2 == 0:
+        raise ValueError("highlight_kernel_size 必须是正奇数")
+    if not include_highlight:
+        return None
+    return cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (int(kernel_size), int(kernel_size)),
+    )
+
+
 def _find_contours(mask):
     """兼容 OpenCV 两返回值和三返回值格式。"""
     result = cv2.findContours(
@@ -140,8 +165,14 @@ def _spot_confidence(contour, area, bbox):
     return circularity * fill_ratio
 
 
-def _make_color_mask(frame, hsv_ranges):
-    """生成颜色掩膜，并自动合并红色等跨越 H 边界的范围。"""
+def _make_color_mask(
+    frame,
+    hsv_ranges,
+    highlight_kernel=None,
+    highlight_max_saturation=COLOR_HIGHLIGHT_MAX_SATURATION,
+    highlight_min_value=COLOR_HIGHLIGHT_MIN_VALUE,
+):
+    """生成颜色掩膜，并补全紧邻彩色区域的过曝高亮中心。"""
     hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
     mask = None
     for lower, upper in hsv_ranges:
@@ -150,6 +181,21 @@ def _make_color_mask(frame, hsv_ranges):
             mask = current
         else:
             mask = cv2.bitwise_or(mask, current)
+
+    if highlight_kernel is not None:
+        highlight_mask = cv2.inRange(
+            hsv,
+            (0, 0, int(highlight_min_value)),
+            (179, int(highlight_max_saturation), 255),
+        )
+        color_neighborhood = cv2.dilate(mask, highlight_kernel)
+        highlight_mask = cv2.bitwise_and(
+            highlight_mask,
+            color_neighborhood,
+        )
+        mask = cv2.bitwise_or(mask, highlight_mask)
+        del color_neighborhood
+        del highlight_mask
     return mask
 
 
@@ -159,8 +205,17 @@ def _detect_with_ranges(
     min_area,
     max_area,
     min_confidence,
+    highlight_kernel=None,
+    highlight_max_saturation=COLOR_HIGHLIGHT_MAX_SATURATION,
+    highlight_min_value=COLOR_HIGHLIGHT_MIN_VALUE,
 ):
-    mask = _make_color_mask(frame, hsv_ranges)
+    mask = _make_color_mask(
+        frame,
+        hsv_ranges,
+        highlight_kernel,
+        highlight_max_saturation,
+        highlight_min_value,
+    )
     contours = _find_contours(mask)
 
     best = None
@@ -213,6 +268,10 @@ class ColorSpotDetector:
         max_area=COLOR_MAX_AREA,
         hsv_ranges=None,
         min_confidence=COLOR_MIN_CONFIDENCE,
+        include_highlight=COLOR_INCLUDE_HIGHLIGHT,
+        highlight_max_saturation=COLOR_HIGHLIGHT_MAX_SATURATION,
+        highlight_min_value=COLOR_HIGHLIGHT_MIN_VALUE,
+        highlight_kernel_size=COLOR_HIGHLIGHT_KERNEL_SIZE,
         draw_color=COLOR_DRAW_COLOR,
         draw_radius=COLOR_DRAW_RADIUS,
         draw_cross_size=COLOR_DRAW_CROSS_SIZE,
@@ -225,13 +284,38 @@ class ColorSpotDetector:
         self.min_area = min_area
         self.max_area = max_area
         self.min_confidence = min_confidence
+        self.include_highlight = bool(include_highlight)
+        self.highlight_max_saturation = int(highlight_max_saturation)
+        self.highlight_min_value = int(highlight_min_value)
+        self.highlight_kernel_size = int(highlight_kernel_size)
+        self._highlight_kernel = _make_highlight_kernel(
+            self.include_highlight,
+            self.highlight_max_saturation,
+            self.highlight_min_value,
+            self.highlight_kernel_size,
+        )
         self.draw_color = tuple(draw_color)
         self.draw_radius = int(draw_radius)
         self.draw_cross_size = int(draw_cross_size)
         self.target_color = None
         self.hsv_ranges = None
         self.last_spot = None
+        self._target_valid = False
+        self._offset_x = 0
+        self._offset_y = 0
         self.set_color(target_color, hsv_ranges)
+
+    def _update_target_state(self, frame, spot):
+        """更新供串口直接读取的当前帧目标状态。"""
+        if spot is None:
+            self._target_valid = False
+            self._offset_x = 0
+            self._offset_y = 0
+            return
+
+        self._target_valid = True
+        self._offset_x = int(frame.shape[1]) // 2 - int(spot["center_x"])
+        self._offset_y = int(frame.shape[0]) // 2 - int(spot["center_y"])
 
     def set_color(self, target_color=COLOR_TARGET, hsv_ranges=None):
         """切换预设颜色或自定义 HSV 范围，并返回 self。"""
@@ -242,6 +326,9 @@ class ColorSpotDetector:
         self.target_color = color_name
         self.hsv_ranges = normalized
         self.last_spot = None
+        self._target_valid = False
+        self._offset_x = 0
+        self._offset_y = 0
         return self
 
     def detect(self, frame):
@@ -252,7 +339,11 @@ class ColorSpotDetector:
             self.min_area,
             self.max_area,
             self.min_confidence,
+            self._highlight_kernel,
+            self.highlight_max_saturation,
+            self.highlight_min_value,
         )
+        self._update_target_state(frame, self.last_spot)
         return self.last_spot
 
     def draw(self, frame, spot=None, color=None):
@@ -267,6 +358,12 @@ class ColorSpotDetector:
             color,
             radius=self.draw_radius,
             cross_size=self.draw_cross_size,
+            offset_x=(
+                self._offset_x if spot is self.last_spot else None
+            ),
+            offset_y=(
+                self._offset_y if spot is self.last_spot else None
+            ),
         )
         return spot
 
@@ -285,6 +382,10 @@ def detect_color_spot(
     min_area=COLOR_MIN_AREA,
     max_area=COLOR_MAX_AREA,
     min_confidence=COLOR_MIN_CONFIDENCE,
+    include_highlight=COLOR_INCLUDE_HIGHLIGHT,
+    highlight_max_saturation=COLOR_HIGHLIGHT_MAX_SATURATION,
+    highlight_min_value=COLOR_HIGHLIGHT_MIN_VALUE,
+    highlight_kernel_size=COLOR_HIGHLIGHT_KERNEL_SIZE,
 ):
     """兼容旧代码的一次性检测函数。
 
@@ -295,12 +396,21 @@ def detect_color_spot(
         target_color,
         hsv_ranges,
     )
+    highlight_kernel = _make_highlight_kernel(
+        include_highlight,
+        highlight_max_saturation,
+        highlight_min_value,
+        highlight_kernel_size,
+    )
     return _detect_with_ranges(
         frame,
         ranges,
         min_area,
         max_area,
         min_confidence,
+        highlight_kernel,
+        highlight_max_saturation,
+        highlight_min_value,
     )
 
 
@@ -310,8 +420,10 @@ def draw_spot_center(
     color=COLOR_DRAW_COLOR,
     radius=COLOR_DRAW_RADIUS,
     cross_size=COLOR_DRAW_CROSS_SIZE,
+    offset_x=None,
+    offset_y=None,
 ):
-    """在目标中心绘制圆环和十字；spot 为 None 时不做任何操作。"""
+    """绘制目标、画面中心、连线和目标相对画面中心的偏差。"""
     if spot is None:
         return None
 
@@ -324,6 +436,32 @@ def draw_spot_center(
     else:
         center_y = spot["y"]
     center = (center_x, center_y)
+    image_width = int(frame.shape[1])
+    image_height = int(frame.shape[0])
+    image_center_x = image_width // 2
+    image_center_y = image_height // 2
+    image_center = (image_center_x, image_center_y)
+    if offset_x is None:
+        offset_x = image_center_x - center_x
+    if offset_y is None:
+        offset_y = image_center_y - center_y
+
+    cv2.line(frame, image_center, center, color, 1)
+    cv2.line(
+        frame,
+        (image_center_x - cross_size, image_center_y),
+        (image_center_x + cross_size, image_center_y),
+        color,
+        1,
+    )
+    cv2.line(
+        frame,
+        (image_center_x, image_center_y - cross_size),
+        (image_center_x, image_center_y + cross_size),
+        color,
+        1,
+    )
+    cv2.circle(frame, image_center, 3, color, -1)
     cv2.circle(frame, center, radius, color, 2)
     cv2.line(
         frame,
@@ -339,6 +477,17 @@ def draw_spot_center(
         color,
         1,
     )
+    label_x = min(max(0, center_x + 8), max(0, image_width - 145))
+    label_y = max(20, center_y - 8)
+    cv2.putText(
+        frame,
+        "X:{} Y:{}".format(offset_x, offset_y),
+        (label_x, label_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        color,
+        2,
+    )
     return spot
 
 
@@ -353,12 +502,13 @@ def run_color_tracking(
     import gc
     import sys
 
-    from camera_io import CameraIO, DISPLAY_TARGET_BOARD
+    from camera_io import CameraIO, DISPLAY_TARGET_IDE
 
     if display_target is None:
-        display_target = DISPLAY_TARGET_BOARD
+        display_target = DISPLAY_TARGET_IDE
 
     camera = None
+    tracking_uart = None
     frame_count = 0
     detector = ColorSpotDetector(
         target_color=target_color,
@@ -377,11 +527,18 @@ def run_color_tracking(
 
         camera = CameraIO(display_target=display_target)
         camera.initialize()
-
+        from uart_io import TrackingUART
+        tracking_uart = TrackingUART().initialize()
         while True:
             image = camera.snapshot()
             frame = image.to_numpy_ref()
             detector.process(frame)
+            tracking_uart.send_target(
+                detector._target_valid,
+                detector._offset_x,
+                detector._offset_y,
+                frame_id=frame_count,
+            )
             camera.show_image(image)
 
             frame_count += 1
@@ -397,6 +554,8 @@ def run_color_tracking(
         sys.print_exception(error)
     finally:
         print("正在释放资源")
+        if tracking_uart is not None:
+            tracking_uart.deinitialize()
         if camera is not None:
             camera.deinitialize()
         gc.collect()

@@ -361,6 +361,21 @@ class DigitDetector:
         self.last_threshold = 0.0
         self.last_contour_count = 0
         self.last_detection_ms = 0
+        self._target_valid = False
+        self._offset_x = 0
+        self._offset_y = 0
+
+    def _update_target_state(self, frame, result):
+        """更新供串口直接读取的当前帧目标状态。"""
+        if result is None:
+            self._target_valid = False
+            self._offset_x = 0
+            self._offset_y = 0
+            return
+
+        self._target_valid = True
+        self._offset_x = int(frame.shape[1]) // 2 - int(result["center_x"])
+        self._offset_y = int(frame.shape[0]) // 2 - int(result["center_y"])
 
     def _valid_digit_box(
         self,
@@ -505,6 +520,7 @@ class DigitDetector:
 
         self.last_detection_ms = _ticks_diff(_ticks_ms(), start_ms)
         if not digits:
+            self._update_target_state(frame, None)
             return None
 
         x_min = min(item["x"] for item in digits)
@@ -516,7 +532,7 @@ class DigitDetector:
             for item in digits
         ) / len(digits)
 
-        return {
+        result = {
             "text": "".join(item["text"] for item in digits),
             "digits": digits,
             "count": len(digits),
@@ -533,6 +549,8 @@ class DigitDetector:
             "bbox": (x_min, y_min, x_max - x_min, y_max - y_min),
             "threshold": float(self.last_threshold),
         }
+        self._update_target_state(frame, result)
+        return result
 
     def draw(self, frame, result):
         """把一次 detect() 的逐位结果绘制到原始帧上。"""

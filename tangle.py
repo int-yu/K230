@@ -39,10 +39,6 @@ from config import (
     RECTANGLE_USE_CANNY_FALLBACK,
     RECTANGLE_USE_OTSU,
     RECTANGLE_LOST_FRAME_LIMIT,
-    TRACK_UART_BAUDRATE,
-    TRACK_UART_ID,
-    TRACK_UART_RX_PIN,
-    TRACK_UART_TX_PIN,
 )
 
 
@@ -265,6 +261,21 @@ class RectangleDetector:
         self.last_candidate_count = 0
         self.last_detection_ms = 0
         self.last_source = "none"
+        self._target_valid = False
+        self._offset_x = 0
+        self._offset_y = 0
+
+    def _update_target_state(self, frame, target):
+        """更新供串口直接读取的当前帧目标状态。"""
+        if target is None:
+            self._target_valid = False
+            self._offset_x = 0
+            self._offset_y = 0
+            return
+
+        self._target_valid = True
+        self._offset_x = int(frame.shape[1]) // 2 - int(target["center_x"])
+        self._offset_y = int(frame.shape[0]) // 2 - int(target["center_y"])
 
     def detect(self, frame):
         """返回最佳目标字典；没有合格目标时返回 None。"""
@@ -360,8 +371,10 @@ class RectangleDetector:
 
         self.last_detection_ms = _ticks_diff(_ticks_ms(), start_ms)
         if best is None or best["confidence"] < self.min_confidence:
+            self._update_target_state(frame, None)
             return None
         self.last_source = best["source"]
+        self._update_target_state(frame, best)
         return best
 
     def draw(self, frame, result):
@@ -705,48 +718,6 @@ class TargetHoldState:
         self.lost_frame_count = 0
 
 
-def initialize_tracking_uart():
-    """初始化示例程序使用的追踪串口。"""
-    from machine import FPIOA, UART
-
-    fpioa = FPIOA()
-    if TRACK_UART_ID == 1:
-        uart_channel = UART.UART1
-        tx_function = FPIOA.UART1_TXD
-        rx_function = FPIOA.UART1_RXD
-    elif TRACK_UART_ID == 2:
-        uart_channel = UART.UART2
-        tx_function = FPIOA.UART2_TXD
-        rx_function = FPIOA.UART2_RXD
-    else:
-        raise ValueError("当前程序仅配置 UART1 或 UART2")
-
-    fpioa.set_function(TRACK_UART_TX_PIN, tx_function)
-    fpioa.set_function(TRACK_UART_RX_PIN, rx_function)
-    return UART(
-        uart_channel,
-        baudrate=TRACK_UART_BAUDRATE,
-        bits=UART.EIGHTBITS,
-        parity=UART.PARITY_NONE,
-        stop=UART.STOPBITS_ONE,
-    )
-
-
-def send_target_offset(uart, frame_id, valid, offset_x, offset_y):
-    """发送一行 ASCII：T,frame,valid,x,y。"""
-    if not valid:
-        offset_x = 0
-        offset_y = 0
-    uart.write(
-        "T,{},{},{},{}\n".format(
-            int(frame_id),
-            1 if valid else 0,
-            int(offset_x),
-            int(offset_y),
-        )
-    )
-
-
 def draw_image_center(frame):
     """绘制画面中心十字。"""
     color = (255, 255, 255)
@@ -770,7 +741,7 @@ def draw_image_center(frame):
 def target_relative_offset(target):
     """计算目标中心相对于画面中心的坐标。"""
     return (
-        target["center_x"] - IMAGE_CENTER_X,
+        IMAGE_CENTER_X - target["center_x"],
         IMAGE_CENTER_Y - target["center_y"],
     )
 
@@ -863,6 +834,7 @@ def run_rectangle_tracking():
 
     from camera_io import CameraIO, DISPLAY_TARGET_IDE
     from color import ColorSpotDetector
+    from uart_io import TrackingUART
 
     camera = None
     tracking_uart = None
@@ -870,13 +842,13 @@ def run_rectangle_tracking():
 
     try:
         print("初始化追踪串口")
-        tracking_uart = initialize_tracking_uart()
+        tracking_uart = TrackingUART().initialize()
         print(
             "UART{}：TX=GPIO{}，RX=GPIO{}，{} baud".format(
-                TRACK_UART_ID,
-                TRACK_UART_TX_PIN,
-                TRACK_UART_RX_PIN,
-                TRACK_UART_BAUDRATE,
+                tracking_uart.uart_id,
+                tracking_uart.tx_pin,
+                tracking_uart.rx_pin,
+                tracking_uart.baudrate,
             )
         )
 
@@ -912,15 +884,17 @@ def run_rectangle_tracking():
             display_target, target_is_held = hold_state.update(current_target)
 
             draw_image_center(frame)
-            offset_x = None
-            offset_y = None
+            display_offset_x = None
+            display_offset_y = None
             if display_target is not None:
-                offset_x, offset_y = target_relative_offset(display_target)
+                display_offset_x, display_offset_y = target_relative_offset(
+                    display_target,
+                )
                 draw_tracking_target(
                     frame,
                     display_target,
-                    offset_x,
-                    offset_y,
+                    display_offset_x,
+                    display_offset_y,
                     target_is_held,
                 )
 
@@ -935,13 +909,11 @@ def run_rectangle_tracking():
                 2,
             )
 
-            target_valid = current_target is not None
-            send_target_offset(
-                tracking_uart,
-                frame_count,
-                target_valid,
-                offset_x if target_valid else 0,
-                offset_y if target_valid else 0,
+            tracking_uart.send_target(
+                detector._target_valid,
+                detector._offset_x,
+                detector._offset_y,
+                frame_id=frame_count,
             )
             camera.show_image(image)
             frame_count += 1
@@ -950,8 +922,8 @@ def run_rectangle_tracking():
                 print_tracking_status(
                     frame_count,
                     display_target,
-                    offset_x,
-                    offset_y,
+                    display_offset_x,
+                    display_offset_y,
                     target_is_held,
                     fps,
                     detector,
@@ -971,10 +943,7 @@ def run_rectangle_tracking():
     finally:
         print("释放资源")
         if tracking_uart is not None:
-            try:
-                tracking_uart.deinit()
-            except Exception:
-                pass
+            tracking_uart.deinitialize()
         if camera is not None:
             camera.deinitialize()
         if hold_state is not None:
