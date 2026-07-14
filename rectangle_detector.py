@@ -64,12 +64,63 @@ def _find_contours(binary, retrieval_mode):
     return result[1], result[2]
 
 
-def _hierarchy_row(hierarchy, index):
-    """兼容 hierarchy 为 [1, N, 4] 或 [N, 4] 的 OpenCV 移植。"""
+def _is_hierarchy_row(value):
     try:
-        return hierarchy[0][index]
+        int(value[0])
+        int(value[1])
+        int(value[2])
+        int(value[3])
+        return True
     except Exception:
-        return hierarchy[index]
+        return False
+
+
+def _normalize_hierarchy(hierarchy, contour_count):
+    """把 [1,N,4]、[N,4] 或扁平数据统一为可按轮廓索引的行。"""
+    try:
+        shape = hierarchy.shape
+    except Exception:
+        shape = None
+
+    if shape is not None:
+        dimension_count = len(shape)
+        if dimension_count == 3:
+            return hierarchy[0]
+        if dimension_count == 2:
+            return hierarchy
+        if dimension_count == 1:
+            return tuple(
+                tuple(
+                    int(hierarchy[index * 4 + column])
+                    for column in range(4)
+                )
+                for index in range(contour_count)
+            )
+
+    try:
+        first_item = hierarchy[0]
+    except Exception:
+        raise ValueError("findContours 返回了无法读取的 hierarchy")
+
+    if _is_hierarchy_row(first_item):
+        return hierarchy
+
+    try:
+        if _is_hierarchy_row(first_item[0]):
+            return first_item
+    except Exception:
+        pass
+
+    try:
+        return tuple(
+            tuple(
+                int(hierarchy[index * 4 + column])
+                for column in range(4)
+            )
+            for index in range(contour_count)
+        )
+    except Exception:
+        raise ValueError("无法解析 findContours 返回的 hierarchy")
 
 
 def _contour_points(approx):
@@ -116,19 +167,36 @@ def _angle_score(points):
     return _clamp(1.0 - cosine_sum / 4.0)
 
 
-def _contour_center(contour, bounding_box):
-    try:
-        moments = cv2.moments(contour)
-        if moments["m00"]:
-            return (
-                moments["m10"] / moments["m00"],
-                moments["m01"] / moments["m00"],
-            )
-    except Exception:
-        pass
-
+def _quadrilateral_center(points, bounding_box):
+    """用两条对角线交点表示透视四边形的中心。"""
     x, y, width, height = bounding_box
-    return (x + width / 2.0, y + height / 2.0)
+    fallback = (x + width / 2.0, y + height / 2.0)
+    if len(points) != 4:
+        return fallback
+
+    x1, y1 = points[0]
+    x2, y2 = points[2]
+    x3, y3 = points[1]
+    x4, y4 = points[3]
+
+    denominator = (
+        (x1 - x2) * (y3 - y4) -
+        (y1 - y2) * (x3 - x4)
+    )
+    if abs(denominator) < 0.000001:
+        return fallback
+
+    determinant_1 = x1 * y2 - y1 * x2
+    determinant_2 = x3 * y4 - y3 * x4
+    center_x = (
+        determinant_1 * (x3 - x4) -
+        (x1 - x2) * determinant_2
+    ) / denominator
+    center_y = (
+        determinant_1 * (y3 - y4) -
+        (y1 - y2) * determinant_2
+    ) / denominator
+    return (center_x, center_y)
 
 
 def draw_frame_outline(frame, rectangle, color, thickness=2):
@@ -267,6 +335,8 @@ class BlackWhiteFrameDetector:
             self.last_detection_ms = _ticks_diff(_ticks_ms(), start_ms)
             return None
 
+        hierarchy = _normalize_hierarchy(hierarchy, len(contours))
+
         area_scale = scale_x * scale_y
         minimum_detect_area = self.min_area / area_scale
         candidate_indices = self._collect_candidate_indices(
@@ -315,7 +385,7 @@ class BlackWhiteFrameDetector:
     ):
         candidates = []
         for index, contour in enumerate(contours):
-            row = _hierarchy_row(hierarchy, index)
+            row = hierarchy[index]
             first_child = int(row[2])
             if first_child < 0:
                 continue
@@ -329,7 +399,7 @@ class BlackWhiteFrameDetector:
         return candidates[:self.max_candidates]
 
     def _largest_child_index(self, contours, hierarchy, outer_index):
-        child_index = int(_hierarchy_row(hierarchy, outer_index)[2])
+        child_index = int(hierarchy[outer_index][2])
         largest_index = -1
         largest_area = 0.0
 
@@ -340,7 +410,7 @@ class BlackWhiteFrameDetector:
                 largest_area = child_area
                 largest_index = child_index
 
-            child_index = int(_hierarchy_row(hierarchy, child_index)[0])
+            child_index = int(hierarchy[child_index][0])
             visited += 1
 
         return largest_index
@@ -396,8 +466,10 @@ class BlackWhiteFrameDetector:
         if border_uniformity is None:
             return None
 
-        outer_center = _contour_center(outer_contour, outer_box)
-        inner_center = _contour_center(inner_contour, inner_box)
+        outer_points = _contour_points(outer_approx)
+        inner_points = _contour_points(inner_approx)
+        outer_center = _quadrilateral_center(outer_points, outer_box)
+        inner_center = _quadrilateral_center(inner_points, inner_box)
         center_score = self._center_alignment_score(
             outer_center,
             inner_center,
@@ -406,8 +478,6 @@ class BlackWhiteFrameDetector:
         if center_score is None:
             return None
 
-        outer_points = _contour_points(outer_approx)
-        inner_points = _contour_points(inner_approx)
         geometry_score = (
             _angle_score(outer_points) +
             _angle_score(inner_points)
