@@ -187,12 +187,13 @@ def print_tracking_status(
     if target is None:
         print(
             "frame={} 未检测到目标 fps={:.1f} detect={}ms "
-            "threshold={:.1f} candidates={}".format(
+            "threshold={:.1f} candidates={} source={}".format(
                 frame_count,
                 fps,
                 detector.last_detection_ms,
                 detector.last_threshold,
                 detector.last_candidate_count,
+                detector.last_source,
             )
         )
         return
@@ -201,7 +202,7 @@ def print_tracking_status(
     print(
         "frame={} x={} y={} confidence={:.3f} state={} "
         "lost={}/{} fps={:.1f} detect={}ms threshold={:.1f} "
-        "candidates={}".format(
+        "candidates={} edge={:.1f}/{:.1f} source={}".format(
             frame_count,
             relative_x,
             relative_y,
@@ -213,6 +214,9 @@ def print_tracking_status(
             detector.last_detection_ms,
             detector.last_threshold,
             detector.last_candidate_count,
+            target["mean_edge_contrast"],
+            target["min_edge_contrast"],
+            target["source"],
         )
     )
 
