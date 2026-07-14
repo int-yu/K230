@@ -20,31 +20,34 @@ from config import (
     DISPLAY_MODE_VIRT,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
+    NUM_DISPLAY_FPS,
+    NUM_DISPLAY_HEIGHT,
+    NUM_DISPLAY_MODE,
+    NUM_DISPLAY_QUALITY,
+    NUM_DISPLAY_TO_IDE,
+    NUM_DISPLAY_WIDTH,
+    NUM_DISPLAY_X,
+    NUM_DISPLAY_Y,
+    TANGLE_DISPLAY_FPS,
+    TANGLE_DISPLAY_HEIGHT,
+    TANGLE_DISPLAY_MODE,
+    TANGLE_DISPLAY_TO_IDE,
+    TANGLE_DISPLAY_WIDTH,
+    TANGLE_DISPLAY_X,
+    TANGLE_DISPLAY_Y,
 )
+
+
+DISPLAY_TARGET_BOARD = "board"
+DISPLAY_TARGET_IDE = "ide"
 
 
 class CameraIO:
     """统一管理摄像头采集、显示输出和媒体资源。"""
 
-    def __init__(
-        self,
-        display_mode,
-        display_width,
-        display_height,
-        display_fps,
-        to_ide,
-        display_x=0,
-        display_y=0,
-        quality=None,
-    ):
-        self.display_mode = display_mode
-        self.display_width = display_width
-        self.display_height = display_height
-        self.display_fps = display_fps
-        self.to_ide = to_ide
-        self.display_x = display_x
-        self.display_y = display_y
-        self.quality = quality
+    def __init__(self, display_target=DISPLAY_TARGET_BOARD):
+        self.display_target = display_target
+        self._configure_display(display_target)
 
         self.sensor = None
         self._running = False
@@ -179,6 +182,37 @@ class CameraIO:
 
         raise ValueError(
             "不支持的显示模式: {}".format(self.display_mode)
+        )
+
+    def _configure_display(self, display_target):
+        """根据显示目标加载板载屏幕或 CanMV IDE 配置。"""
+
+        if display_target == DISPLAY_TARGET_BOARD:
+            self.display_mode = TANGLE_DISPLAY_MODE
+            self.display_width = TANGLE_DISPLAY_WIDTH
+            self.display_height = TANGLE_DISPLAY_HEIGHT
+            self.display_fps = TANGLE_DISPLAY_FPS
+            self.to_ide = TANGLE_DISPLAY_TO_IDE
+            self.display_x = TANGLE_DISPLAY_X
+            self.display_y = TANGLE_DISPLAY_Y
+            self.quality = None
+            return
+
+        if display_target == DISPLAY_TARGET_IDE:
+            self.display_mode = NUM_DISPLAY_MODE
+            self.display_width = NUM_DISPLAY_WIDTH
+            self.display_height = NUM_DISPLAY_HEIGHT
+            self.display_fps = NUM_DISPLAY_FPS
+            self.to_ide = NUM_DISPLAY_TO_IDE
+            self.display_x = NUM_DISPLAY_X
+            self.display_y = NUM_DISPLAY_Y
+            self.quality = NUM_DISPLAY_QUALITY
+            return
+
+        raise ValueError(
+            "不支持的显示目标: {}，可用值为 board 或 ide".format(
+                display_target
+            )
         )
 
     @staticmethod

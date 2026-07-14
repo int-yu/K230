@@ -22,7 +22,7 @@ import os
 import cv2
 import ulab.numpy as np
 
-from camera_io import CameraIO
+from camera_io import CameraIO, DISPLAY_TARGET_IDE
 from config import (
     DIGIT_MATCH_THRESHOLD as MATCH_THRESHOLD,
     DIGIT_MAX_AREA as MAX_DIGIT_AREA,
@@ -41,14 +41,6 @@ from config import (
     DIGIT_TEMPLATE_DIR as TEMPLATE_DIR,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
-    NUM_DISPLAY_FPS,
-    NUM_DISPLAY_HEIGHT,
-    NUM_DISPLAY_MODE,
-    NUM_DISPLAY_QUALITY,
-    NUM_DISPLAY_TO_IDE,
-    NUM_DISPLAY_WIDTH,
-    NUM_DISPLAY_X,
-    NUM_DISPLAY_Y,
 )
 
 
@@ -468,16 +460,7 @@ try:
 
     print("全部数字模板加载完成")
 
-    camera = CameraIO(
-        display_mode=NUM_DISPLAY_MODE,
-        display_width=NUM_DISPLAY_WIDTH,
-        display_height=NUM_DISPLAY_HEIGHT,
-        display_fps=NUM_DISPLAY_FPS,
-        to_ide=NUM_DISPLAY_TO_IDE,
-        display_x=NUM_DISPLAY_X,
-        display_y=NUM_DISPLAY_Y,
-        quality=NUM_DISPLAY_QUALITY,
-    )
+    camera = CameraIO(display_target=DISPLAY_TARGET_IDE)
     camera.initialize()
 
     clock = time.clock()

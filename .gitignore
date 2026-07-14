@@ -1,4 +1,5 @@
 __pycache__/
+_digit_templates/
 *.py[cod]
 
 .vscode/

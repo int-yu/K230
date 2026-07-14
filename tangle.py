@@ -28,8 +28,9 @@ import gc
 import math
 
 import cv2
+from machine import FPIOA, UART
 
-from camera_io import CameraIO
+from camera_io import CameraIO, DISPLAY_TARGET_IDE
 from config import (
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
@@ -42,13 +43,10 @@ from config import (
     RECTANGLE_MIN_CONFIDENCE as MIN_CONFIDENCE,
     RECTANGLE_MIN_HEIGHT as MIN_HEIGHT,
     RECTANGLE_MIN_WIDTH as MIN_WIDTH,
-    TANGLE_DISPLAY_FPS,
-    TANGLE_DISPLAY_HEIGHT as LCD_HEIGHT,
-    TANGLE_DISPLAY_MODE,
-    TANGLE_DISPLAY_TO_IDE,
-    TANGLE_DISPLAY_WIDTH as LCD_WIDTH,
-    TANGLE_DISPLAY_X as DISPLAY_X,
-    TANGLE_DISPLAY_Y as DISPLAY_Y,
+    TRACK_UART_BAUDRATE,
+    TRACK_UART_ID,
+    TRACK_UART_RX_PIN,
+    TRACK_UART_TX_PIN,
 )
 
 
@@ -81,6 +79,72 @@ CENTER_CROSS_SIZE = 12
 
 
 camera = None
+tracking_uart = None
+
+
+# ============================================================
+# 方框中心偏差串口输出
+# ============================================================
+
+def initialize_tracking_uart():
+    """初始化用于向单片机发送追踪数据的串口。"""
+
+    fpioa = FPIOA()
+
+    if TRACK_UART_ID == 1:
+        uart_channel = UART.UART1
+        tx_function = FPIOA.UART1_TXD
+        rx_function = FPIOA.UART1_RXD
+
+    elif TRACK_UART_ID == 2:
+        uart_channel = UART.UART2
+        tx_function = FPIOA.UART2_TXD
+        rx_function = FPIOA.UART2_RXD
+
+    else:
+        raise ValueError(
+            "当前程序仅配置 UART1 或 UART2"
+        )
+
+    fpioa.set_function(
+        TRACK_UART_TX_PIN,
+        tx_function
+    )
+    fpioa.set_function(
+        TRACK_UART_RX_PIN,
+        rx_function
+    )
+
+    return UART(
+        uart_channel,
+        baudrate=TRACK_UART_BAUDRATE,
+        bits=UART.EIGHTBITS,
+        parity=UART.PARITY_NONE,
+        stop=UART.STOPBITS_ONE,
+    )
+
+
+def send_target_offset(frame_id, valid, offset_x, offset_y):
+    """
+    发送一行 ASCII：T,frame,valid,x,y\n
+
+    示例：
+        T,125,1,83,-26
+        T,126,0,0,0
+    """
+
+    if not valid:
+        offset_x = 0
+        offset_y = 0
+
+    packet = "T,{},{},{},{}\n".format(
+        int(frame_id),
+        1 if valid else 0,
+        int(offset_x),
+        int(offset_y)
+    )
+
+    tracking_uart.write(packet)
 
 
 # ============================================================
@@ -337,17 +401,22 @@ def draw_image_center(frame):
 # ============================================================
 
 try:
+    print("初始化追踪串口")
+
+    tracking_uart = initialize_tracking_uart()
+
+    print(
+        "UART{}：TX=GPIO{}，RX=GPIO{}，{} baud".format(
+            TRACK_UART_ID,
+            TRACK_UART_TX_PIN,
+            TRACK_UART_RX_PIN,
+            TRACK_UART_BAUDRATE
+        )
+    )
+
     print("初始化 CSI2 摄像头")
 
-    camera = CameraIO(
-        display_mode=TANGLE_DISPLAY_MODE,
-        display_width=LCD_WIDTH,
-        display_height=LCD_HEIGHT,
-        display_fps=TANGLE_DISPLAY_FPS,
-        to_ide=TANGLE_DISPLAY_TO_IDE,
-        display_x=DISPLAY_X,
-        display_y=DISPLAY_Y,
-    )
+    camera = CameraIO(display_target=DISPLAY_TARGET_IDE)
     camera.initialize()
 
     clock = time.clock()
@@ -364,8 +433,8 @@ try:
 
     print(
         "LCD 显示偏移：x={}, y={}".format(
-            DISPLAY_X,
-            DISPLAY_Y
+            camera.display_x,
+            camera.display_y
         )
     )
 
@@ -851,6 +920,21 @@ try:
             2
         )
 
+        # 当前帧真实检测到目标才发送有效标志。
+        # 历史保持帧不发送旧坐标，统一发送 valid=0、x=0、y=0。
+        target_valid = (
+            relative_x is not None and
+            relative_y is not None and
+            not target_is_held
+        )
+
+        send_target_offset(
+            frame_count,
+            target_valid,
+            relative_x if target_valid else 0,
+            relative_y if target_valid else 0
+        )
+
         # ====================================================
         # 显示到板载屏幕
         # ====================================================
@@ -921,6 +1005,12 @@ except Exception as error:
 
 finally:
     print("释放资源")
+
+    if tracking_uart is not None:
+        try:
+            tracking_uart.deinit()
+        except Exception:
+            pass
 
     if camera is not None:
         camera.deinitialize()
