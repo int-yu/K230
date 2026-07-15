@@ -678,10 +678,6 @@ class RectangleDetector:
         return (x, y)
 
 
-# 兼容旧代码；新代码请使用 RectangleDetector。
-BlackWhiteFrameDetector = RectangleDetector
-
-
 IMAGE_CENTER_X = IMAGE_WIDTH // 2
 IMAGE_CENTER_Y = IMAGE_HEIGHT // 2
 PRINT_INTERVAL = 10
@@ -844,11 +840,12 @@ def run_rectangle_tracking():
         print("初始化追踪串口")
         tracking_uart = TrackingUART().initialize()
         print(
-            "UART{}：TX=GPIO{}，RX=GPIO{}，{} baud".format(
+            "UART{}：TX=GPIO{}，RX=GPIO{}，{} baud，周期={}ms".format(
                 tracking_uart.uart_id,
                 tracking_uart.tx_pin,
                 tracking_uart.rx_pin,
                 tracking_uart.baudrate,
+                tracking_uart.send_period_ms,
             )
         )
 
@@ -908,11 +905,10 @@ def run_rectangle_tracking():
                 (255, 255, 255),
                 2,
             )
-
             tracking_uart.send_target(
-                detector._target_valid,
-                detector._offset_x,
-                detector._offset_y,
+                color_detector._target_valid,
+                color_detector._offset_x,
+                color_detector._offset_y,
                 frame_id=frame_count,
             )
             camera.show_image(image)

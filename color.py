@@ -22,8 +22,8 @@
     custom_ranges = (((0, 100, 120), (12, 255, 255)),)
     color_detector.set_color(hsv_ranges=custom_ranges)
 
-模块的检测核心不依赖 CameraIO、Display 或主程序全局变量。旧版的
-detect_color_spot()、draw_spot_center() 和 run_color_tracking() 仍然保留。
+模块的检测核心不依赖 CameraIO、Display 或主程序全局变量。
+draw_spot_center() 和 run_color_tracking() 可用于自定义绘制和独立演示。
 """
 
 import math
@@ -46,22 +46,18 @@ from config import (
 )
 
 
-# 保留旧名称，已有代码仍可从 color 导入 COLOR_HSV_RANGES。
-COLOR_HSV_RANGES = COLOR_PRESET_HSV_RANGES
-
-
 def _resolve_hsv_ranges(target_color, hsv_ranges):
     """返回已校验的预设或自定义 HSV 范围。"""
     if hsv_ranges is None:
         color_name = str(target_color).lower()
-        if color_name not in COLOR_HSV_RANGES:
+        if color_name not in COLOR_PRESET_HSV_RANGES:
             raise ValueError(
                 "未知颜色：{}，可用颜色：{}，或传入 hsv_ranges".format(
                     target_color,
-                    ", ".join(COLOR_HSV_RANGES.keys()),
+                    ", ".join(COLOR_PRESET_HSV_RANGES.keys()),
                 )
             )
-        ranges = COLOR_HSV_RANGES[color_name]
+        ranges = COLOR_PRESET_HSV_RANGES[color_name]
     else:
         color_name = "custom"
         ranges = hsv_ranges
@@ -165,15 +161,8 @@ def _spot_confidence(contour, area, bbox):
     return circularity * fill_ratio
 
 
-def _make_color_mask(
-    frame,
-    hsv_ranges,
-    highlight_kernel=None,
-    highlight_max_saturation=COLOR_HIGHLIGHT_MAX_SATURATION,
-    highlight_min_value=COLOR_HIGHLIGHT_MIN_VALUE,
-):
-    """生成颜色掩膜，并补全紧邻彩色区域的过曝高亮中心。"""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+def _make_hsv_range_mask(hsv, hsv_ranges):
+    """根据一个或多个 HSV 范围生成掩膜。"""
     mask = None
     for lower, upper in hsv_ranges:
         current = cv2.inRange(hsv, lower, upper)
@@ -181,43 +170,26 @@ def _make_color_mask(
             mask = current
         else:
             mask = cv2.bitwise_or(mask, current)
-
-    if highlight_kernel is not None:
-        highlight_mask = cv2.inRange(
-            hsv,
-            (0, 0, int(highlight_min_value)),
-            (179, int(highlight_max_saturation), 255),
-        )
-        color_neighborhood = cv2.dilate(mask, highlight_kernel)
-        highlight_mask = cv2.bitwise_and(
-            highlight_mask,
-            color_neighborhood,
-        )
-        mask = cv2.bitwise_or(mask, highlight_mask)
-        del color_neighborhood
-        del highlight_mask
     return mask
 
 
-def _detect_with_ranges(
-    frame,
-    hsv_ranges,
+def _make_base_color_mask(frame, hsv_ranges):
+    """生成全图 HSV 和基础颜色掩膜，不在全图执行高亮补全。"""
+    hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+    mask = _make_hsv_range_mask(hsv, hsv_ranges)
+    return hsv, mask
+
+
+def _best_spot_from_mask(
+    mask,
     min_area,
     max_area,
     min_confidence,
-    highlight_kernel=None,
-    highlight_max_saturation=COLOR_HIGHLIGHT_MAX_SATURATION,
-    highlight_min_value=COLOR_HIGHLIGHT_MIN_VALUE,
+    offset_x=0,
+    offset_y=0,
 ):
-    mask = _make_color_mask(
-        frame,
-        hsv_ranges,
-        highlight_kernel,
-        highlight_max_saturation,
-        highlight_min_value,
-    )
+    """返回掩膜中结构评分最高的候选，并把局部坐标映射到原图。"""
     contours = _find_contours(mask)
-
     best = None
     for contour in contours:
         area = cv2.contourArea(contour)
@@ -241,17 +213,127 @@ def _detect_with_ranges(
         ):
             center_x, center_y = _contour_center(contour, bbox)
             best = {
-                # x/y 保持旧接口兼容；center_x/center_y 便于接入 tangle。
-                "x": center_x,
-                "y": center_y,
-                "center_x": center_x,
-                "center_y": center_y,
+                "x": center_x + offset_x,
+                "y": center_y + offset_y,
+                "center_x": center_x + offset_x,
+                "center_y": center_y + offset_y,
                 "confidence": confidence,
                 "area": area,
-                "bbox": bbox,
+                "bbox": (
+                    bbox[0] + offset_x,
+                    bbox[1] + offset_y,
+                    bbox[2],
+                    bbox[3],
+                ),
             }
-
     return best
+
+
+def _expanded_roi(bbox, image_width, image_height, margin):
+    """把候选框扩展 margin 像素并裁剪到画面范围。"""
+    x, y, width, height = bbox
+    x1 = max(0, int(x) - margin)
+    y1 = max(0, int(y) - margin)
+    x2 = min(image_width, int(x + width) + margin)
+    y2 = min(image_height, int(y + height) + margin)
+    return (x1, y1, x2, y2)
+
+
+def _complete_highlight_in_candidate_roi(
+    hsv,
+    hsv_ranges,
+    candidate,
+    highlight_kernel,
+    highlight_max_saturation,
+    highlight_min_value,
+    min_area,
+    max_area,
+    min_confidence,
+):
+    """只在当前帧最佳基础候选的 ROI 内补全过曝高亮像素。"""
+    image_height = int(hsv.shape[0])
+    image_width = int(hsv.shape[1])
+    kernel_radius = int(highlight_kernel.shape[0]) // 2
+    x1, y1, x2, y2 = _expanded_roi(
+        candidate["bbox"],
+        image_width,
+        image_height,
+        kernel_radius,
+    )
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    hsv_roi = hsv[y1:y2, x1:x2]
+    # 不复用已经传给 findContours() 的全图掩膜，兼容可能原地修改
+    # 输入的 OpenCV 固件；ROI 很小，重新生成基础颜色掩膜开销有限。
+    base_roi = _make_hsv_range_mask(hsv_roi, hsv_ranges)
+    highlight_mask = cv2.inRange(
+        hsv_roi,
+        (0, 0, int(highlight_min_value)),
+        (179, int(highlight_max_saturation), 255),
+    )
+    color_neighborhood = cv2.dilate(base_roi, highlight_kernel)
+    highlight_mask = cv2.bitwise_and(
+        highlight_mask,
+        color_neighborhood,
+    )
+    completed_mask = cv2.bitwise_or(base_roi, highlight_mask)
+    best = _best_spot_from_mask(
+        completed_mask,
+        min_area,
+        max_area,
+        min_confidence,
+        offset_x=x1,
+        offset_y=y1,
+    )
+
+    del completed_mask
+    del color_neighborhood
+    del highlight_mask
+    del base_roi
+    del hsv_roi
+    return best
+
+
+def _detect_with_ranges(
+    frame,
+    hsv_ranges,
+    min_area,
+    max_area,
+    min_confidence,
+    highlight_kernel=None,
+    highlight_max_saturation=COLOR_HIGHLIGHT_MAX_SATURATION,
+    highlight_min_value=COLOR_HIGHLIGHT_MIN_VALUE,
+):
+    hsv, base_mask = _make_base_color_mask(frame, hsv_ranges)
+
+    # 高亮补全前只按基础颜色结构评分选一个候选。此处暂不应用最终
+    # min_confidence，避免白色过曝中心让基础颜色环的评分暂时偏低。
+    base_candidate = _best_spot_from_mask(
+        base_mask,
+        min_area,
+        max_area,
+        0.0,
+    )
+    if base_candidate is None:
+        return None
+
+    if highlight_kernel is None:
+        if base_candidate["confidence"] < min_confidence:
+            return None
+        return base_candidate
+
+    return _complete_highlight_in_candidate_roi(
+        hsv,
+        hsv_ranges,
+        base_candidate,
+        highlight_kernel,
+        highlight_max_saturation,
+        highlight_min_value,
+        min_area,
+        max_area,
+        min_confidence,
+    )
 
 
 class ColorSpotDetector:
@@ -375,45 +457,6 @@ class ColorSpotDetector:
         return spot
 
 
-def detect_color_spot(
-    frame,
-    target_color=COLOR_TARGET,
-    hsv_ranges=None,
-    min_area=COLOR_MIN_AREA,
-    max_area=COLOR_MAX_AREA,
-    min_confidence=COLOR_MIN_CONFIDENCE,
-    include_highlight=COLOR_INCLUDE_HIGHLIGHT,
-    highlight_max_saturation=COLOR_HIGHLIGHT_MAX_SATURATION,
-    highlight_min_value=COLOR_HIGHLIGHT_MIN_VALUE,
-    highlight_kernel_size=COLOR_HIGHLIGHT_KERNEL_SIZE,
-):
-    """兼容旧代码的一次性检测函数。
-
-    连续视频建议改用 ColorSpotDetector，避免每帧重复解析颜色范围。
-    """
-    _validate_detector_limits(min_area, max_area, min_confidence)
-    unused_color_name, ranges = _resolve_hsv_ranges(
-        target_color,
-        hsv_ranges,
-    )
-    highlight_kernel = _make_highlight_kernel(
-        include_highlight,
-        highlight_max_saturation,
-        highlight_min_value,
-        highlight_kernel_size,
-    )
-    return _detect_with_ranges(
-        frame,
-        ranges,
-        min_area,
-        max_area,
-        min_confidence,
-        highlight_kernel,
-        highlight_max_saturation,
-        highlight_min_value,
-    )
-
-
 def draw_spot_center(
     frame,
     spot,
@@ -501,6 +544,7 @@ def run_color_tracking(
     """独立运行示例；CameraIO 仅在调用本函数时才导入。"""
     import gc
     import sys
+    import time
 
     from camera_io import CameraIO, DISPLAY_TARGET_IDE
 
@@ -529,7 +573,9 @@ def run_color_tracking(
         camera.initialize()
         from uart_io import TrackingUART
         tracking_uart = TrackingUART().initialize()
+        clock = time.clock()
         while True:
+            clock.tick()
             image = camera.snapshot()
             frame = image.to_numpy_ref()
             detector.process(frame)
@@ -538,6 +584,16 @@ def run_color_tracking(
                 detector._offset_x,
                 detector._offset_y,
                 frame_id=frame_count,
+            )
+            fps = clock.fps()
+            cv2.putText(
+                frame,
+                "FPS: {:.1f}".format(fps),
+                (5, 25),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 255),
+                2,
             )
             camera.show_image(image)
 
