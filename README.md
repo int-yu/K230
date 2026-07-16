@@ -11,6 +11,7 @@
 | `uart_io.py` | FPIOA、UART 生命周期、原始读写和目标偏差协议 |
 | `bluetooth_uart.py` | UART2 蓝牙单字符指令接收与缓存，导出 `BluetoothUART` |
 | `color.py` | 彩色光点检测，导出 `ColorSpotDetector` |
+| `road.py` | 红色 T/十字/普通路径和黑色双排虚线结束符检测，导出 `RoadSymbolDetector` |
 | `tangle.py` | 黑框白心方框检测，导出 `RectangleDetector`；直接运行时也是完整追踪程序 |
 | `pencil_rectangle.py` | 细铅笔线方框检测，导出 `PencilRectangleDetector`；多重方框中选择估算边框最细者 |
 | `corner_cycle.py` | 独立的方框四角顺时针停留、移动和串口输出应用 |
@@ -24,18 +25,21 @@
 
 ```python
 from color import ColorSpotDetector
+from road import RoadSymbolDetector
 from tangle import RectangleDetector
 from pencil_rectangle import PencilRectangleDetector
 from num import DigitDetector
 
 # 主循环外初始化一次。数字模板也只会在这里加载一次。
 color_detector = ColorSpotDetector()
+road_detector = RoadSymbolDetector()
 rectangle_detector = RectangleDetector()
 pencil_rectangle_detector = PencilRectangleDetector()
 digit_detector = DigitDetector()
 
 # 获取 frame 后调用；process 默认会在 frame 上绘图。
 spot = color_detector.process(frame)
+road_result = road_detector.process(frame)
 rectangle = rectangle_detector.process(frame)
 pencil_rectangle = pencil_rectangle_detector.process(frame)
 digit_result = digit_detector.process(frame)
@@ -130,6 +134,76 @@ tracking_uart.send_target(
 | `COLOR_HIGHLIGHT_KERNEL_SIZE` | `15` | 搜索颜色区域邻近高亮像素的椭圆核尺寸，必须是正奇数。 |
 
 `ColorSpotDetector.process(frame)` 默认绘制目标中心、画面中心、两点连线和 `X/Y` 相对偏差。偏差定义与串口一致：`画面中心坐标 - 目标中心坐标`。
+
+## 寻路符号模块
+
+`road.py` 识别红色 T 型、红色十字型、黑色双排虚线结束符以及普通红色路径。模块只使用 HSV 掩膜、固定比例五区、轮廓和直线拟合，不做骨架化，也不保存上一帧结果。
+
+```python
+from road import RoadSymbolDetector
+
+# 主循环外初始化一次。
+road_detector = RoadSymbolDetector()
+
+# frame 为 RGB 图像；默认同时绘制识别结果。
+result = road_detector.process(frame)
+
+if result is not None:
+    symbol = result["symbol"]
+    confidence = result["confidence"]
+```
+
+判定优先级固定为：
+
+```text
+end → cross → t → line → None
+```
+
+- `t`：左、右、下和中心区有红色，上区无红色；返回 `left/right/down` 三个端点。
+- `cross`：上、下、左、右和中心区都有红色；返回 `up/down/left/right` 四个端点。
+- `end`：至少三块矩形黑块组成一行，两行满足间距和横向重合要求，并且中央存在红色路径；返回 `near/terminal`。
+- `line`：没有特殊符号，但仍存在纵向红色路径；返回 `near/far`，其中 `near` 是画面下方的可见端，`far` 是画面上方的可见端。
+
+T 和十字分别使用左右红色质心、上下方向红色质心拟合水平和垂直中心线。`intersection` 是两条中心线的交点，`segments` 从该交点连接到每个最远可见端点。结束符只绘制两条黑块行中心线、`END` 标签，以及红色路径的 `near/terminal` 和连线，不逐块绘制外接框。
+
+统一返回字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `symbol` | `t`、`cross`、`end` 或 `line` |
+| `center_x`, `center_y` | T/十字为交点；结束符为两排虚线整体中心；普通路径为 `near/far` 中点 |
+| `confidence` | 当前符号的结构评分，范围为 `0..1`，不是概率，也不能与其他检测器横向比较 |
+| `intersection` | T/十字交点；其他状态为 `None` |
+| `endpoints` | 各状态对应的方向端点字典 |
+| `segments` | 需要绘制的中心线段，每段为 `(起点, 终点)` |
+| `dash_lines` | `end` 的上、下两条黑块行中心线；其他状态为空元组 |
+| `arm_scores` | `up/down/left/right/center` 五区的红色像素占用率 |
+
+需要自己控制绘制顺序或验证检测不修改画面时：
+
+```python
+result = road_detector.process(frame, draw=False)
+if result is not None:
+    road_detector.draw(frame, result)
+```
+
+主要调参项：
+
+| 参数 | 默认值 | 含义 |
+| --- | ---: | --- |
+| `ROAD_ARM_MIN_OCCUPANCY` | `0.025` | 五区判定某方向存在红线的最低像素占用率 |
+| `ROAD_RED_HSV_RANGES` | 两段红色 HSV | 红色路径阈值，H 跨越 `0/179` 时必须保留两段 |
+| `ROAD_RED_MORPH_KERNEL_SIZE` | `5` | 红色掩膜闭运算核边长 |
+| `ROAD_BLACK_MAX_VALUE` | `90` | 结束符黑色掩膜允许的最大 HSV 明度 V |
+| `ROAD_DASH_MIN_COUNT_PER_ROW` | `3` | 每排结束虚线至少需要的黑块数 |
+| `ROAD_DASH_MIN_ROW_SEPARATION_RATIO` | `0.07` | 两排中心的最小纵向间距，占画面高度比例 |
+| `ROAD_DASH_MAX_ROW_SEPARATION_RATIO` | `0.30` | 两排中心的最大纵向间距，占画面高度比例 |
+| `ROAD_DASH_MIN_HORIZONTAL_OVERLAP` | `0.55` | 两排横向覆盖相对较短一排的最低重合率 |
+| `ROAD_PATH_CORRIDOR_HALF_WIDTH_RATIO` | `0.12` | 普通路径端点搜索走廊的半宽，占画面宽度比例 |
+
+可直接运行 `road.py` 调用 `run_road_demo()`。演示使用 `CameraIO(display_target=DISPLAY_TARGET_IDE)`，并在送入 IDE 显示前绘制当前主循环 FPS。
+
+当前实拍目录回归结果：T 全部文件 `50/50`、按内容去重 `17/17`；十字全部文件 `14/14`、去重 `11/11`；结束符全部文件 `5/5`、去重 `4/4`。T/十字样图未误报结束符，结束符样图未误报 T/十字。普通路径目前使用居中、偏移、轻微倾斜和上端截断的合成图验证，尚无独立普通直线路径实拍准确率数据。
 
 ## 方框检测模块
 
@@ -331,6 +405,23 @@ if result is not None:
 digit_detector = DigitDetector(template_dir="_digit_templates")
 ```
 
+模板加载和全图粗检测使用相同的基础预处理顺序：
+
+```text
+灰度化 → 高斯模糊 → Otsu 二值化 → 闭运算 → 前景裁剪 → 等比例归一化
+```
+
+两条路径共用 `DIGIT_BLUR_KERNEL_SIZE` 和 `DIGIT_MORPH_KERNEL_SIZE`。修改模糊或形态学参数时，模板会在 `DigitDetector` 初始化阶段按新参数重新预处理，避免模板笔画粗细与现场数字不一致。原始模板文件仍应使用白底黑字图片。
+
+粗候选产生后，检测器只在候选 ROI 内使用 `DIGIT_LOCAL_BLUR_KERNEL_SIZE` 和 `DIGIT_LOCAL_MORPH_KERNEL_SIZE` 再做一次局部 Otsu。较大的局部闭运算核用于修复反光造成的细小断笔，不会对整帧重复执行。分类顺序如下：
+
+1. 高相关性的清晰数字优先采用模板结果。
+2. 透视压缩明显时，使用轮廓形状距离辅助分类。
+3. 使用内部孔洞数量和位置区分 `0/4/6/8/9`，并兼容裂纹破坏下半孔的 `8`。
+4. 最后只保留中心高度和字符高度一致的主要数字行，排除 FPS 文字、十字线和小污迹。
+
+与实拍环境关系最大的参数是 `DIGIT_MAX_ASPECT_RATIO`、`DIGIT_MIN_FILL_RATIO`、`DIGIT_LINE_MIN_HEIGHT_RATIO`、`DIGIT_SHAPE_MAX_DISTANCE` 和 `DIGIT_BROKEN_EIGHT_MIN_ASPECT_RATIO`。调整前应使用带正确标签的实拍图做整批回归，不建议只根据单帧降低 `DIGIT_MATCH_THRESHOLD`。
+
 整串返回字段：
 
 | 字段 | 含义 |
@@ -339,7 +430,7 @@ digit_detector = DigitDetector(template_dir="_digit_templates")
 | `digits` | 每一位数字的结果字典列表 |
 | `count` | 数字候选数量 |
 | `recognized_count` | 达到匹配阈值的数量 |
-| `confidence` | 各候选模板匹配分数截取到 0..1 后的平均值 |
+| `confidence` | 各候选识别分数截取到 0..1 后的平均值；不是概率 |
 | `center_x`, `center_y`, `bbox` | 整串数字的中心和外接矩形 |
 
 每个 `digits` 元素包含：
@@ -347,7 +438,9 @@ digit_detector = DigitDetector(template_dir="_digit_templates")
 - `value`：识别成功时为 `0..9`，未达到阈值时为 `-1`。
 - `text`：数字字符或 `?`。
 - `recognized`：是否达到匹配阈值。
-- `confidence`：该位与最佳模板的归一化相关系数。
+- `confidence`：模板相关性和轮廓形状分数中的较强证据，不是概率。
+- `hole_count`：局部修复后检测到的有效内部孔洞数量。
+- `shape_distance`：与最终数字模板轮廓的形状距离，越小越相似；不支持形状匹配时为 `None`。
 - `center_x`、`center_y`、`x`、`y`、`w`、`h`、`bbox`、`area`：位置和轮廓信息。
 
 ## 串口模块
@@ -504,6 +597,7 @@ elif command == "p":
 模块默认参数统一放在 `config.py`，并按模块使用前缀：
 
 - `COLOR_...`：彩色光点。
+- `ROAD_...`：红色寻路符号和黑色双排虚线结束符。
 - `RECTANGLE_...`：方框。
 - `PENCIL_RECTANGLE_...`：细铅笔线方框。
 - `DIGIT_...`：数字。
@@ -587,6 +681,13 @@ class MyTargetDetector:
 - `config.py`
 
 直接运行彩色光点摄像头示例还需要 `camera_io.py`。
+
+寻路符号功能至少需要：
+
+- `road.py`
+- `config.py`
+
+直接运行 `road.py` 的摄像头演示还需要 `camera_io.py`。
 
 方框功能至少需要：
 
