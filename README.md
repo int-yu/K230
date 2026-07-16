@@ -86,7 +86,7 @@ finally:
     camera.deinitialize()
 ```
 
-板载屏幕和 IDE 的分辨率、位置、帧率、质量参数分别由 `config.py` 中的 `TANGLE_DISPLAY_...` 和 `NUM_DISPLAY_...` 管理。当前摄像头同时启用水平镜像和垂直翻转，等效于旋转 180°。
+板载屏幕和 IDE 的分辨率、位置、帧率、质量参数分别由 `config.py` 中的 `BOARD_DISPLAY_...` 和 `IDE_DISPLAY_...` 管理。它们是所有摄像头程序共享的显示配置，不再与 `tangle.py` 或 `num.py` 绑定。当前摄像头同时启用水平镜像和垂直翻转，等效于旋转 180°。
 
 ## 彩色光点模块
 
@@ -457,6 +457,7 @@ digit_detector = DigitDetector(template_dir="_digit_templates")
 - 波特率：115200
 - 周期发送最小间隔：10 ms
 - READY 重发周期：100 ms
+- 启动握手轮询间隔：10 ms
 - 8 数据位、无校验、1 停止位
 
 接线时，K230 的 TX（GPIO3）连接单片机 PA22（UART2 RX），K230 的 RX（GPIO4）连接单片机 PA21（UART2 TX），两块板还需要共地。当前协议需要双向握手，TX、RX 都必须连接。
@@ -464,19 +465,15 @@ digit_detector = DigitDetector(template_dir="_digit_templates")
 最少调用方式：
 
 ```python
-import time
-
 from tangle import RectangleDetector
 from uart_io import TrackingUART
 
 # 主循环外初始化一次，并等待双方完成 READY/READY_ACK。
 rectangle_detector = RectangleDetector()
 tracking_uart = TrackingUART(send_period_ms=10).initialize()
-while not tracking_uart.update_handshake():
-    time.sleep_ms(10)
+tracking_uart.wait_for_handshake()
 
 # 主循环中直接传入检测器本帧更新的私有状态。
-tracking_uart.poll()
 tracking_uart.send_target(
     rectangle_detector._target_valid,
     rectangle_detector._offset_x,
@@ -552,7 +549,9 @@ tracking_uart = TrackingUART(
 ).initialize()
 ```
 
-`update_handshake()` 会周期发送 READY；收到对方 READY 后立即回复 READY_ACK。只有既收到对方 READY、又收到对方对本机 READY 的 ACK，`handshake_complete` 才为真。双方不能采用“先等待接收、收到后才发送”的流程，否则会互相死锁。
+`wait_for_handshake()` 只在程序启动阶段使用，内部调用 `update_handshake()`，周期发送 READY 并处理 READY/READY_ACK。只有既收到对方 READY、又收到对方对本机 READY 的 ACK，`handshake_complete` 才为真。双方都必须主动发送 READY，不能采用“先等待接收、收到后才发送”的流程，否则会互相死锁。该方法默认一直等待，不设置超时。
+
+握手完成后，主循环继续调用 `send_target()` 即可。该方法会先处理接收缓冲区；如果对端因首个 READY_ACK 丢失而继续重发 READY，K230 会再次回复 READY_ACK，避免出现 K230 已完成而对端仍停在 WAIT 的单边握手状态。完整的单边复位重连暂不在当前协议范围内。
 
 直接在 K230 上运行 `uart_io.py` 会执行通信测试：握手成功前保持等待，成功后每 10 ms 尝试发送固定 `valid=1、x=123、y=-45` TARGET 帧。天猛星 OLED 最后一行应显示：
 
@@ -560,10 +559,9 @@ tracking_uart = TrackingUART(
 K:1 X:+0123 Y:-0045
 ```
 
-除目标协议外，模块也提供 `send_frame()`、`poll()`、`write()`、`any()` 和 `read()`。业务循环必须持续调用 `poll()`，以便处理对方重新发送的握手消息：
+除目标协议外，模块也提供 `send_frame()`、`poll()`、`write()`、`any()` 和 `read()`，供自定义双向协议使用。标准目标发送程序的业务循环不需要单独调用 `poll()`，因为 `send_target()` 已经在发送前处理接收数据：
 
 ```python
-tracking_uart.poll()
 tracking_uart.send_frame(0x20, b"custom payload")
 ```
 
@@ -612,14 +610,23 @@ elif command == "p":
 
 ## 参数管理规则
 
-模块默认参数统一放在 `config.py`，并按模块使用前缀：
+模块默认参数统一放在 `config.py`，分为公共参数和程序特有参数。
+
+公共参数由多个程序共同使用：
+
+- `CAMERA_...`、`IMAGE_...`：摄像头、处理分辨率和画面中心。
+- `BOARD_DISPLAY_...`、`IDE_DISPLAY_...`：板载屏幕与 CanMV IDE 显示配置。
+- `UART_...`：所有目标追踪程序共用的串口、发送周期和启动握手参数。
+
+程序特有参数按模块前缀分区：
 
 - `COLOR_...`：彩色光点。
 - `ROAD_...`：T/十字主轮廓和黑色双排虚线结束符。
 - `RECTANGLE_...`：方框。
+- `TANGLE_...`：方框追踪演示的打印、回收和绘制参数。
+- `CORNER_CYCLE_...`：四角轨迹的停留、移动、串口周期和绘制参数。
 - `PENCIL_RECTANGLE_...`：细铅笔线方框。
 - `DIGIT_...`：数字。
-- `UART_...`：串口和目标偏差协议。
 - `BLUETOOTH_UART_...`：蓝牙指令接收串口。
 
 构造函数参数用于临时覆盖默认值。例如：

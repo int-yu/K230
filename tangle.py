@@ -11,6 +11,8 @@ import time
 import cv2
 
 from config import (
+    IMAGE_CENTER_X,
+    IMAGE_CENTER_Y,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
     RECTANGLE_APPROX_RATIOS,
@@ -39,6 +41,9 @@ from config import (
     RECTANGLE_USE_CANNY_FALLBACK,
     RECTANGLE_USE_OTSU,
     RECTANGLE_LOST_FRAME_LIMIT,
+    TANGLE_CENTER_CROSS_SIZE,
+    TANGLE_GC_INTERVAL,
+    TANGLE_PRINT_INTERVAL,
 )
 
 
@@ -678,13 +683,6 @@ class RectangleDetector:
         return (x, y)
 
 
-IMAGE_CENTER_X = IMAGE_WIDTH // 2
-IMAGE_CENTER_Y = IMAGE_HEIGHT // 2
-PRINT_INTERVAL = 10
-GC_INTERVAL = 60
-CENTER_CROSS_SIZE = 12
-
-
 class TargetHoldState:
     """只在显示端短暂保留目标，不向串口发送历史坐标。"""
 
@@ -719,15 +717,15 @@ def draw_image_center(frame):
     color = (255, 255, 255)
     cv2.line(
         frame,
-        (IMAGE_CENTER_X - CENTER_CROSS_SIZE, IMAGE_CENTER_Y),
-        (IMAGE_CENTER_X + CENTER_CROSS_SIZE, IMAGE_CENTER_Y),
+        (IMAGE_CENTER_X - TANGLE_CENTER_CROSS_SIZE, IMAGE_CENTER_Y),
+        (IMAGE_CENTER_X + TANGLE_CENTER_CROSS_SIZE, IMAGE_CENTER_Y),
         color,
         2,
     )
     cv2.line(
         frame,
-        (IMAGE_CENTER_X, IMAGE_CENTER_Y - CENTER_CROSS_SIZE),
-        (IMAGE_CENTER_X, IMAGE_CENTER_Y + CENTER_CROSS_SIZE),
+        (IMAGE_CENTER_X, IMAGE_CENTER_Y - TANGLE_CENTER_CROSS_SIZE),
+        (IMAGE_CENTER_X, IMAGE_CENTER_Y + TANGLE_CENTER_CROSS_SIZE),
         color,
         2,
     )
@@ -848,6 +846,9 @@ def run_rectangle_tracking():
                 tracking_uart.send_period_ms,
             )
         )
+        print("等待对端串口握手")
+        tracking_uart.wait_for_handshake()
+        print("串口握手完成")
 
         print("初始化黑框白心检测器")
         detector = RectangleDetector()
@@ -876,7 +877,7 @@ def run_rectangle_tracking():
             frame = image.to_numpy_ref()
 
             # 保留现有彩色光点组合；方框检测本身不依赖 color.py。
-            spot = color_detector.process(frame)
+            color_detector.process(frame)
             current_target = detector.process(frame, draw=False)
             display_target, target_is_held = hold_state.update(current_target)
 
@@ -914,7 +915,7 @@ def run_rectangle_tracking():
             camera.show_image(image)
             frame_count += 1
 
-            if frame_count % PRINT_INTERVAL == 0:
+            if frame_count % TANGLE_PRINT_INTERVAL == 0:
                 print_tracking_status(
                     frame_count,
                     display_target,
@@ -928,7 +929,7 @@ def run_rectangle_tracking():
 
             del frame
             del image
-            if frame_count % GC_INTERVAL == 0:
+            if frame_count % TANGLE_GC_INTERVAL == 0:
                 gc.collect()
 
     except KeyboardInterrupt:

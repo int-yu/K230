@@ -15,27 +15,34 @@ import time
 
 import cv2
 
-from config import IMAGE_HEIGHT, IMAGE_WIDTH
+from config import (
+    CORNER_CYCLE_ACTIVE_COLOR,
+    CORNER_CYCLE_CENTER_COLOR,
+    CORNER_CYCLE_COLORS,
+    CORNER_CYCLE_GC_INTERVAL,
+    CORNER_CYCLE_HOLD_MS,
+    CORNER_CYCLE_MOVE_MS,
+    CORNER_CYCLE_NAMES,
+    CORNER_CYCLE_OUTLINE_COLOR,
+    CORNER_CYCLE_PRINT_INTERVAL,
+    CORNER_CYCLE_UART_SEND_PERIOD_MS,
+    IMAGE_HEIGHT,
+    IMAGE_WIDTH,
+)
 from tangle import RectangleDetector, draw_frame_outline
 
 
-CORNER_HOLD_MS = 3000
-CORNER_MOVE_MS = 3000
-UART_SEND_PERIOD_MS = 10
-
-PRINT_INTERVAL = 30
-GC_INTERVAL = 60
-
-CORNER_NAMES = ("TL", "TR", "BR", "BL")
-CORNER_COLORS = (
-    (255, 0, 0),
-    (0, 255, 0),
-    (0, 128, 255),
-    (255, 0, 255),
-)
-OUTLINE_COLOR = (0, 255, 0)
-ACTIVE_COLOR = (255, 255, 0)
-CENTER_COLOR = (255, 255, 255)
+# 保留原有公开名称，避免已有调用代码失效；实际默认值统一来自 config.py。
+CORNER_HOLD_MS = CORNER_CYCLE_HOLD_MS
+CORNER_MOVE_MS = CORNER_CYCLE_MOVE_MS
+UART_SEND_PERIOD_MS = CORNER_CYCLE_UART_SEND_PERIOD_MS
+PRINT_INTERVAL = CORNER_CYCLE_PRINT_INTERVAL
+GC_INTERVAL = CORNER_CYCLE_GC_INTERVAL
+CORNER_NAMES = CORNER_CYCLE_NAMES
+CORNER_COLORS = CORNER_CYCLE_COLORS
+OUTLINE_COLOR = CORNER_CYCLE_OUTLINE_COLOR
+ACTIVE_COLOR = CORNER_CYCLE_ACTIVE_COLOR
+CENTER_COLOR = CORNER_CYCLE_CENTER_COLOR
 
 
 def _ticks_ms():
@@ -288,6 +295,9 @@ def run_corner_cycle(
                 tracking_uart.send_period_ms,
             )
         )
+        print("等待对端串口握手")
+        tracking_uart.wait_for_handshake()
+        print("串口握手完成")
 
         print("初始化方框检测器和摄像头")
         camera = CameraIO(display_target=display_target)

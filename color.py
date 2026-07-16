@@ -31,6 +31,7 @@ import math
 import cv2
 
 from config import (
+    COLOR_DEMO_GC_INTERVAL,
     COLOR_DRAW_COLOR,
     COLOR_DRAW_CROSS_SIZE,
     COLOR_DRAW_RADIUS,
@@ -573,6 +574,9 @@ def run_color_tracking(
         camera.initialize()
         from uart_io import TrackingUART
         tracking_uart = TrackingUART().initialize()
+        print("等待对端串口握手")
+        tracking_uart.wait_for_handshake()
+        print("串口握手完成")
         clock = time.clock()
         while True:
             clock.tick()
@@ -598,7 +602,7 @@ def run_color_tracking(
             camera.show_image(image)
 
             frame_count += 1
-            if frame_count % 30 == 0:
+            if frame_count % COLOR_DEMO_GC_INTERVAL == 0:
                 gc.collect()
 
             del frame

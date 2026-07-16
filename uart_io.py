@@ -5,6 +5,7 @@ import time
 from config import (
     UART_BAUDRATE,
     UART_HANDSHAKE_PERIOD_MS,
+    UART_HANDSHAKE_POLL_INTERVAL_MS,
     UART_ID,
     UART_RX_PIN,
     UART_SEND_PERIOD_MS,
@@ -38,6 +39,13 @@ def _ticks_diff(new_value, old_value):
         return time.ticks_diff(new_value, old_value)
     except AttributeError:
         return new_value - old_value
+
+
+def _sleep_ms(delay_ms):
+    try:
+        time.sleep_ms(delay_ms)
+    except AttributeError:
+        time.sleep(delay_ms / 1000.0)
 
 
 def _crc8(data):
@@ -278,8 +286,8 @@ class TrackingUART(UARTIO):
         return frame
 
     @staticmethod
-    def _find_magic(buffer):
-        for index in range(max(0, len(buffer) - 1)):
+    def _find_magic(buffer, start=0):
+        for index in range(max(0, start), max(0, len(buffer) - 1)):
             if (
                 buffer[index] == UART_FRAME_MAGIC_0 and
                 buffer[index + 1] == UART_FRAME_MAGIC_1
@@ -288,48 +296,54 @@ class TrackingUART(UARTIO):
         return -1
 
     def _extract_frames(self):
+        # CanMV MicroPython 的 bytearray 不支持 del buffer[...]。
+        # 因此解析期间只移动读取位置，结束后再重建尚未消费的尾部数据。
         frames = []
         minimum_size = 7
+        buffer = bytes(self._rx_buffer)
+        buffer_size = len(buffer)
+        read_index = 0
 
-        while len(self._rx_buffer) >= 2:
-            magic_index = self._find_magic(self._rx_buffer)
+        while buffer_size - read_index >= 2:
+            magic_index = self._find_magic(buffer, read_index)
             if magic_index < 0:
-                if self._rx_buffer[-1] == UART_FRAME_MAGIC_0:
-                    del self._rx_buffer[:-1]
+                if buffer[-1] == UART_FRAME_MAGIC_0:
+                    read_index = buffer_size - 1
                 else:
-                    self._rx_buffer = bytearray()
+                    read_index = buffer_size
                 break
-            if magic_index > 0:
-                del self._rx_buffer[:magic_index]
-            if len(self._rx_buffer) < minimum_size:
+            read_index = magic_index
+            if buffer_size - read_index < minimum_size:
                 break
 
-            payload_length = self._rx_buffer[5]
+            payload_length = buffer[read_index + 5]
             if payload_length > UART_FRAME_MAX_PAYLOAD:
-                del self._rx_buffer[0]
+                read_index += 1
                 continue
 
             frame_size = minimum_size + payload_length
-            if len(self._rx_buffer) < frame_size:
+            if buffer_size - read_index < frame_size:
                 break
 
-            body_end = 6 + payload_length
-            body = bytes(self._rx_buffer[2:body_end])
-            received_crc = self._rx_buffer[body_end]
+            body_start = read_index + 2
+            body_end = read_index + 6 + payload_length
+            body = buffer[body_start:body_end]
+            received_crc = buffer[body_end]
             if (
-                self._rx_buffer[2] != UART_FRAME_VERSION or
+                buffer[body_start] != UART_FRAME_VERSION or
                 _crc8(body) != received_crc
             ):
-                del self._rx_buffer[0]
+                read_index += 1
                 continue
 
             frames.append((
-                self._rx_buffer[3],
-                self._rx_buffer[4],
-                bytes(self._rx_buffer[6:body_end]),
+                buffer[read_index + 3],
+                buffer[read_index + 4],
+                buffer[read_index + 6:body_end],
             ))
-            del self._rx_buffer[:frame_size]
+            read_index += frame_size
 
+        self._rx_buffer = bytearray(buffer[read_index:])
         return frames
 
     def _handle_frame(self, message_type, sequence, payload):
@@ -381,6 +395,22 @@ class TrackingUART(UARTIO):
             self._last_ready_ms = now_ms
         return self.handshake_complete
 
+    def wait_for_handshake(
+        self,
+        poll_interval_ms=UART_HANDSHAKE_POLL_INTERVAL_MS,
+    ):
+        """启动阶段阻塞等待双向握手完成，完成后返回 self。
+
+        目标追踪程序只需要在进入主循环前调用一次；握手完成后由
+        send_target() 继续处理对端重发的 READY，避免单边等待 ACK。
+        """
+        if poll_interval_ms <= 0:
+            raise ValueError("握手轮询间隔必须大于 0")
+
+        while not self.update_handshake():
+            _sleep_ms(poll_interval_ms)
+        return self
+
     def send_target(
         self,
         valid,
@@ -390,12 +420,14 @@ class TrackingUART(UARTIO):
         force=False,
         now_ms=None,
     ):
-        """周期发送 TARGET 帧；握手未完成或未到周期时返回 None。"""
+        """维护握手并周期发送 TARGET；未握手或未到周期时返回 None。"""
         self._require_initialized()
         if now_ms is None:
             now_ms = _ticks_ms()
-        if not self.handshake_complete:
-            self.update_handshake(now_ms)
+
+        # 始终维护握手：完成后仍接收并回复对端重发的 READY。
+        # 否则首个 READY_ACK 丢失时，会出现 K230 已完成而对端仍等待。
+        if not self.update_handshake(now_ms):
             return None
         if not force and not self.ready_to_send(now_ms):
             return None
@@ -443,8 +475,7 @@ def run_uart_handshake_test():
     uart = TrackingUART().initialize()
     print("UART test: waiting for MSPM0 handshake...")
     try:
-        while not uart.update_handshake():
-            time.sleep_ms(10)
+        uart.wait_for_handshake()
 
         print("UART test: handshake complete")
         print("TARGET valid=1 x={} y={}".format(
@@ -452,13 +483,12 @@ def run_uart_handshake_test():
             UART_TEST_TARGET_Y,
         ))
         while True:
-            uart.poll()
             uart.send_target(
                 UART_TEST_TARGET_VALID,
                 UART_TEST_TARGET_X,
                 UART_TEST_TARGET_Y,
             )
-            time.sleep_ms(10)
+            _sleep_ms(UART_SEND_PERIOD_MS)
     finally:
         uart.deinitialize()
 

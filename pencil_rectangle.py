@@ -24,6 +24,7 @@ from config import (
     PENCIL_RECTANGLE_DRAW_POINT_RADIUS,
     PENCIL_RECTANGLE_DRAW_THICKNESS,
     PENCIL_RECTANGLE_FALLBACK_THRESHOLD,
+    PENCIL_RECTANGLE_GC_INTERVAL,
     PENCIL_RECTANGLE_GEOMETRY_WEIGHT,
     PENCIL_RECTANGLE_MAX_BORDER_THICKNESS,
     PENCIL_RECTANGLE_MAX_COUNT,
@@ -37,6 +38,7 @@ from config import (
     PENCIL_RECTANGLE_MIN_STRAIGHTNESS_SCORE,
     PENCIL_RECTANGLE_MIN_THICKNESS_UNIFORMITY,
     PENCIL_RECTANGLE_MIN_WIDTH,
+    PENCIL_RECTANGLE_PRINT_INTERVAL,
     PENCIL_RECTANGLE_PARALLEL_WEIGHT,
     PENCIL_RECTANGLE_PROFILE_DARK_RATIO,
     PENCIL_RECTANGLE_PROFILE_END_COUNT,
@@ -856,6 +858,9 @@ def run_pencil_rectangle_demo(
                 tracking_uart.send_period_ms,
             )
         )
+        print("等待对端串口握手")
+        tracking_uart.wait_for_handshake()
+        print("串口握手完成")
 
         camera = CameraIO(display_target=display_target)
         camera.initialize()
@@ -917,7 +922,7 @@ def run_pencil_rectangle_demo(
             camera.show_image(image)
             frame_count += 1
 
-            if frame_count % 30 == 0:
+            if frame_count % PENCIL_RECTANGLE_PRINT_INTERVAL == 0:
                 if state is None:
                     print(
                         "target=none fps={:.1f} contours={} candidates={}".format(
@@ -943,16 +948,16 @@ def run_pencil_rectangle_demo(
                             fps,
                         )
                     )
-            print(
-                "detect={}ms total={:.1f}ms fps={:.1f}".format(
-                    detector.last_detection_ms,
-                    1000.0 / fps,
-                    fps,
+                print(
+                    "detect={}ms total={:.1f}ms fps={:.1f}".format(
+                        detector.last_detection_ms,
+                        1000.0 / fps,
+                        fps,
+                    )
                 )
-            )
             del frame
             del image
-            if frame_count % 60 == 0:
+            if frame_count % PENCIL_RECTANGLE_GC_INTERVAL == 0:
                 gc.collect()
 
     except KeyboardInterrupt:

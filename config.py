@@ -2,8 +2,13 @@
 
 
 # ============================================================
-# 共享摄像头参数
+# 一、多个程序共享的公共参数
 # ============================================================
+
+
+# ------------------------------------------------------------
+# 摄像头与处理画面
+# ------------------------------------------------------------
 
 CAMERA_ID = 2
 CAMERA_SOURCE_WIDTH = 1280
@@ -13,15 +18,17 @@ CAMERA_PIXEL_FORMAT = "RGB888"
 
 IMAGE_WIDTH = 640
 IMAGE_HEIGHT = 480
+IMAGE_CENTER_X = IMAGE_WIDTH // 2
+IMAGE_CENTER_Y = IMAGE_HEIGHT // 2
 
 # 当前画面需要同时水平镜像和垂直翻转，等效于旋转 180°。
 CAMERA_HMIRROR = True
 CAMERA_VFLIP = True
 
 
-# ============================================================
-# 串口参数（uart_io.py）
-# ============================================================
+# ------------------------------------------------------------
+# 目标追踪串口（uart_io.py）
+# ------------------------------------------------------------
 
 # 默认使用 UART1。K230 TX 接单片机 RX，K230 RX 接单片机 TX。
 UART_ID = 1
@@ -30,6 +37,45 @@ UART_RX_PIN = 4
 UART_BAUDRATE = 115200
 UART_SEND_PERIOD_MS = 10
 UART_HANDSHAKE_PERIOD_MS = 100
+UART_HANDSHAKE_POLL_INTERVAL_MS = 10
+
+# ------------------------------------------------------------
+# 摄像头显示输出（camera_io.py）
+# ------------------------------------------------------------
+
+DISPLAY_MODE_ST7701 = "st7701"
+DISPLAY_MODE_VIRT = "virt"
+
+
+# 板载 3.5 寸 ST7701 屏幕，供所有程序的 DISPLAY_TARGET_BOARD 使用。
+BOARD_DISPLAY_MODE = DISPLAY_MODE_ST7701
+BOARD_DISPLAY_WIDTH = 800
+BOARD_DISPLAY_HEIGHT = 480
+BOARD_DISPLAY_FPS = 30
+BOARD_DISPLAY_TO_IDE = False
+BOARD_DISPLAY_X = (BOARD_DISPLAY_WIDTH - IMAGE_WIDTH) // 2
+BOARD_DISPLAY_Y = (BOARD_DISPLAY_HEIGHT - IMAGE_HEIGHT) // 2
+
+
+# CanMV IDE 虚拟显示，供所有程序的 DISPLAY_TARGET_IDE 使用。
+IDE_DISPLAY_MODE = DISPLAY_MODE_VIRT
+IDE_DISPLAY_WIDTH = IMAGE_WIDTH
+IDE_DISPLAY_HEIGHT = IMAGE_HEIGHT
+IDE_DISPLAY_FPS = 30
+IDE_DISPLAY_TO_IDE = True
+IDE_DISPLAY_QUALITY = 80
+IDE_DISPLAY_X = 0
+IDE_DISPLAY_Y = 0
+
+
+# ============================================================
+# 二、各程序或模块特有的参数
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 蓝牙串口（bluetooth_uart.py）
+# ------------------------------------------------------------
 
 # 蓝牙串口默认使用 UART2。不同蓝牙模块的默认波特率可能不同。
 BLUETOOTH_UART_ID = 2
@@ -39,38 +85,9 @@ BLUETOOTH_UART_BAUDRATE = 9600
 BLUETOOTH_UART_SEND_PERIOD_MS = 0
 
 
-# ============================================================
-# 显示模式
-# ============================================================
-
-DISPLAY_MODE_ST7701 = "st7701"
-DISPLAY_MODE_VIRT = "virt"
-
-
-# tangle.py：板载 3.5 寸 ST7701 屏幕
-TANGLE_DISPLAY_MODE = DISPLAY_MODE_ST7701
-TANGLE_DISPLAY_WIDTH = 800
-TANGLE_DISPLAY_HEIGHT = 480
-TANGLE_DISPLAY_FPS = 30
-TANGLE_DISPLAY_TO_IDE = False
-TANGLE_DISPLAY_X = (TANGLE_DISPLAY_WIDTH - IMAGE_WIDTH) // 2
-TANGLE_DISPLAY_Y = (TANGLE_DISPLAY_HEIGHT - IMAGE_HEIGHT) // 2
-
-
-# num.py：CanMV IDE 虚拟显示
-NUM_DISPLAY_MODE = DISPLAY_MODE_VIRT
-NUM_DISPLAY_WIDTH = IMAGE_WIDTH
-NUM_DISPLAY_HEIGHT = IMAGE_HEIGHT
-NUM_DISPLAY_FPS = 30
-NUM_DISPLAY_TO_IDE = True
-NUM_DISPLAY_QUALITY = 80
-NUM_DISPLAY_X = 0
-NUM_DISPLAY_Y = 0
-
-
-# ============================================================
-# 矩形检测参数（tangle.py）
-# ============================================================
+# ------------------------------------------------------------
+# 黑框白心方框检测与演示（tangle.py）
+# ------------------------------------------------------------
 
 # 在较低分辨率上检测，最终坐标自动映射回 IMAGE_WIDTH × IMAGE_HEIGHT。
 RECTANGLE_DETECT_WIDTH = 320
@@ -114,10 +131,35 @@ RECTANGLE_DRAW_CENTER_RADIUS = 6
 # 连续多少帧未检测到目标后，才判定目标丢失。
 RECTANGLE_LOST_FRAME_LIMIT = 5
 
+TANGLE_PRINT_INTERVAL = 10
+TANGLE_GC_INTERVAL = 60
+TANGLE_CENTER_CROSS_SIZE = 12
 
-# ============================================================
-# 细铅笔线方框检测参数（pencil_rectangle.py）
-# ============================================================
+
+# ------------------------------------------------------------
+# 方框四角循环应用（corner_cycle.py）
+# ------------------------------------------------------------
+
+CORNER_CYCLE_HOLD_MS = 3000
+CORNER_CYCLE_MOVE_MS = 3000
+CORNER_CYCLE_UART_SEND_PERIOD_MS = UART_SEND_PERIOD_MS
+CORNER_CYCLE_PRINT_INTERVAL = 30
+CORNER_CYCLE_GC_INTERVAL = 60
+CORNER_CYCLE_NAMES = ("TL", "TR", "BR", "BL")
+CORNER_CYCLE_COLORS = (
+    (255, 0, 0),
+    (0, 255, 0),
+    (0, 128, 255),
+    (255, 0, 255),
+)
+CORNER_CYCLE_OUTLINE_COLOR = (0, 255, 0)
+CORNER_CYCLE_ACTIVE_COLOR = (255, 255, 0)
+CORNER_CYCLE_CENTER_COLOR = (255, 255, 255)
+
+
+# ------------------------------------------------------------
+# 细铅笔线方框检测与演示（pencil_rectangle.py）
+# ------------------------------------------------------------
 
 # 细线在低分辨率缩放后容易消失，因此默认使用完整 640x480 画面检测。
 PENCIL_RECTANGLE_DETECT_WIDTH = IMAGE_WIDTH
@@ -168,11 +210,13 @@ PENCIL_RECTANGLE_DRAW_COLOR = (0, 255, 0)
 PENCIL_RECTANGLE_DRAW_CENTER_COLOR = (255, 255, 0)
 PENCIL_RECTANGLE_DRAW_THICKNESS = 2
 PENCIL_RECTANGLE_DRAW_POINT_RADIUS = 5
+PENCIL_RECTANGLE_PRINT_INTERVAL = 30
+PENCIL_RECTANGLE_GC_INTERVAL = 60
 
 
-# ============================================================
-# 彩色光点检测参数（color.py）
-# ============================================================
+# ------------------------------------------------------------
+# 彩色光点检测与演示（color.py）
+# ------------------------------------------------------------
 
 # ColorSpotDetector() 不传参数时使用这些默认值。
 COLOR_TARGET = "red"
@@ -208,11 +252,12 @@ COLOR_PRESET_HSV_RANGES = {
 COLOR_DRAW_COLOR = (255, 255, 255)
 COLOR_DRAW_RADIUS = 7
 COLOR_DRAW_CROSS_SIZE = 10
+COLOR_DEMO_GC_INTERVAL = 30
 
 
-# ============================================================
-# 寻路符号检测参数（road.py）
-# ============================================================
+# ------------------------------------------------------------
+# 寻路符号检测与演示（road.py）
+# ------------------------------------------------------------
 
 # 在较低分辨率上检测，再把坐标映射回原图。
 ROAD_DETECT_WIDTH = 320
@@ -269,11 +314,12 @@ ROAD_DRAW_TEXT_COLOR = (255, 255, 255)
 ROAD_DRAW_THICKNESS = 2
 ROAD_DRAW_POINT_RADIUS = 6
 ROAD_DRAW_FONT_SCALE = 0.60
+ROAD_DEMO_GC_INTERVAL = 30
 
 
-# ============================================================
-# 数字识别参数（num.py）
-# ============================================================
+# ------------------------------------------------------------
+# 数字识别与演示（num.py）
+# ------------------------------------------------------------
 
 DIGIT_TEMPLATE_DIR = "/digit_templates"
 DIGIT_TEMPLATE_DIR_CANDIDATES = (
@@ -321,3 +367,5 @@ DIGIT_DRAW_UNKNOWN_COLOR = (255, 0, 0)
 DIGIT_DRAW_TEXT_COLOR = (255, 255, 0)
 DIGIT_DRAW_THICKNESS = 2
 DIGIT_DRAW_SUMMARY = True
+DIGIT_DEMO_PRINT_INTERVAL = 30
+DIGIT_DEMO_GC_INTERVAL = 30

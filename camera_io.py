@@ -9,6 +9,13 @@ from media.display import Display
 from media.media import MediaManager
 
 from config import (
+    BOARD_DISPLAY_FPS,
+    BOARD_DISPLAY_HEIGHT,
+    BOARD_DISPLAY_MODE,
+    BOARD_DISPLAY_TO_IDE,
+    BOARD_DISPLAY_WIDTH,
+    BOARD_DISPLAY_X,
+    BOARD_DISPLAY_Y,
     CAMERA_FPS,
     CAMERA_HMIRROR,
     CAMERA_ID,
@@ -18,23 +25,16 @@ from config import (
     CAMERA_VFLIP,
     DISPLAY_MODE_ST7701,
     DISPLAY_MODE_VIRT,
+    IDE_DISPLAY_FPS,
+    IDE_DISPLAY_HEIGHT,
+    IDE_DISPLAY_MODE,
+    IDE_DISPLAY_QUALITY,
+    IDE_DISPLAY_TO_IDE,
+    IDE_DISPLAY_WIDTH,
+    IDE_DISPLAY_X,
+    IDE_DISPLAY_Y,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
-    NUM_DISPLAY_FPS,
-    NUM_DISPLAY_HEIGHT,
-    NUM_DISPLAY_MODE,
-    NUM_DISPLAY_QUALITY,
-    NUM_DISPLAY_TO_IDE,
-    NUM_DISPLAY_WIDTH,
-    NUM_DISPLAY_X,
-    NUM_DISPLAY_Y,
-    TANGLE_DISPLAY_FPS,
-    TANGLE_DISPLAY_HEIGHT,
-    TANGLE_DISPLAY_MODE,
-    TANGLE_DISPLAY_TO_IDE,
-    TANGLE_DISPLAY_WIDTH,
-    TANGLE_DISPLAY_X,
-    TANGLE_DISPLAY_Y,
 )
 
 
@@ -188,25 +188,25 @@ class CameraIO:
         """根据显示目标加载板载屏幕或 CanMV IDE 配置。"""
 
         if display_target == DISPLAY_TARGET_BOARD:
-            self.display_mode = TANGLE_DISPLAY_MODE
-            self.display_width = TANGLE_DISPLAY_WIDTH
-            self.display_height = TANGLE_DISPLAY_HEIGHT
-            self.display_fps = TANGLE_DISPLAY_FPS
-            self.to_ide = TANGLE_DISPLAY_TO_IDE
-            self.display_x = TANGLE_DISPLAY_X
-            self.display_y = TANGLE_DISPLAY_Y
+            self.display_mode = BOARD_DISPLAY_MODE
+            self.display_width = BOARD_DISPLAY_WIDTH
+            self.display_height = BOARD_DISPLAY_HEIGHT
+            self.display_fps = BOARD_DISPLAY_FPS
+            self.to_ide = BOARD_DISPLAY_TO_IDE
+            self.display_x = BOARD_DISPLAY_X
+            self.display_y = BOARD_DISPLAY_Y
             self.quality = None
             return
 
         if display_target == DISPLAY_TARGET_IDE:
-            self.display_mode = NUM_DISPLAY_MODE
-            self.display_width = NUM_DISPLAY_WIDTH
-            self.display_height = NUM_DISPLAY_HEIGHT
-            self.display_fps = NUM_DISPLAY_FPS
-            self.to_ide = NUM_DISPLAY_TO_IDE
-            self.display_x = NUM_DISPLAY_X
-            self.display_y = NUM_DISPLAY_Y
-            self.quality = NUM_DISPLAY_QUALITY
+            self.display_mode = IDE_DISPLAY_MODE
+            self.display_width = IDE_DISPLAY_WIDTH
+            self.display_height = IDE_DISPLAY_HEIGHT
+            self.display_fps = IDE_DISPLAY_FPS
+            self.to_ide = IDE_DISPLAY_TO_IDE
+            self.display_x = IDE_DISPLAY_X
+            self.display_y = IDE_DISPLAY_Y
+            self.quality = IDE_DISPLAY_QUALITY
             return
 
         raise ValueError(

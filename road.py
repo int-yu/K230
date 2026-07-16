@@ -25,6 +25,7 @@ from config import (
     ROAD_BLACK_MAX_VALUE,
     ROAD_BLACK_MORPH_KERNEL_SIZE,
     ROAD_CROSS_TOP_MAX_RATIO,
+    ROAD_DEMO_GC_INTERVAL,
     ROAD_DASH_MAX_ASPECT_RATIO,
     ROAD_DASH_MAX_HEIGHT_RATIO,
     ROAD_DASH_MAX_ROW_SEPARATION_RATIO,
@@ -1037,7 +1038,7 @@ def run_road_demo(display_target=None):
             camera.show_image(image)
 
             frame_count += 1
-            if frame_count % 30 == 0:
+            if frame_count % ROAD_DEMO_GC_INTERVAL == 0:
                 gc.collect()
             del frame
             del image

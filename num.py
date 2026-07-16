@@ -22,6 +22,8 @@ except ImportError:
 from config import (
     DIGIT_BLUR_KERNEL_SIZE,
     DIGIT_BROKEN_EIGHT_MIN_ASPECT_RATIO,
+    DIGIT_DEMO_GC_INTERVAL,
+    DIGIT_DEMO_PRINT_INTERVAL,
     DIGIT_DRAW_RECOGNIZED_COLOR,
     DIGIT_DRAW_SUMMARY,
     DIGIT_DRAW_TEXT_COLOR,
@@ -1052,7 +1054,7 @@ def run_digit_demo():
             camera.show_image(image)
             frame_count += 1
 
-            if frame_count % 30 == 0:
+            if frame_count % DIGIT_DEMO_PRINT_INTERVAL == 0:
                 text = result["text"] if result is not None else ""
                 print(
                     "FPS: {:.2f}, Digits: {}, Count: {}".format(
@@ -1064,7 +1066,7 @@ def run_digit_demo():
 
             del frame
             del image
-            if frame_count % 30 == 0:
+            if frame_count % DIGIT_DEMO_GC_INTERVAL == 0:
                 gc.collect()
 
     except KeyboardInterrupt:
