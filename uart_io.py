@@ -1,15 +1,29 @@
-"""K230 UART 生命周期、限速发送和目标偏差协议。"""
+"""K230 UART 生命周期、二进制数据帧、握手和目标偏差协议。"""
 
 import time
 
 from config import (
     UART_BAUDRATE,
+    UART_HANDSHAKE_PERIOD_MS,
     UART_ID,
-    UART_PACKET_PREFIX,
     UART_RX_PIN,
     UART_SEND_PERIOD_MS,
     UART_TX_PIN,
 )
+
+
+UART_FRAME_MAGIC_0 = 0xAA
+UART_FRAME_MAGIC_1 = 0x55
+UART_FRAME_VERSION = 0x01
+UART_FRAME_MAX_PAYLOAD = 32
+
+UART_MESSAGE_READY = 0x01
+UART_MESSAGE_READY_ACK = 0x02
+UART_MESSAGE_TARGET = 0x10
+
+UART_TEST_TARGET_VALID = True
+UART_TEST_TARGET_X = 123
+UART_TEST_TARGET_Y = -45
 
 
 def _ticks_ms():
@@ -24,6 +38,27 @@ def _ticks_diff(new_value, old_value):
         return time.ticks_diff(new_value, old_value)
     except AttributeError:
         return new_value - old_value
+
+
+def _crc8(data):
+    """计算 CRC-8/ATM，生成多项式为 0x07，初始值为 0。"""
+    crc = 0
+    for value in data:
+        crc ^= int(value)
+        for _ in range(8):
+            if crc & 0x80:
+                crc = ((crc << 1) ^ 0x07) & 0xFF
+            else:
+                crc = (crc << 1) & 0xFF
+    return crc
+
+
+def _encode_int16(value):
+    value = int(value)
+    if value < -32768 or value > 32767:
+        raise ValueError("目标偏差必须在 int16 范围内")
+    unsigned_value = value & 0xFFFF
+    return bytes((unsigned_value & 0xFF, (unsigned_value >> 8) & 0xFF))
 
 
 class UARTIO:
@@ -179,11 +214,7 @@ class UARTIO:
 
 
 class TrackingUART(UARTIO):
-    """发送有效标志与目标相对偏差的 UART。
-
-    数据格式：T,frame,valid,x,y\n
-    valid 为 0 时，x 和 y 强制发送 0；接收端应先判断 valid。
-    """
+    """使用统一二进制帧完成双向握手并发送目标偏差。"""
 
     def __init__(
         self,
@@ -191,16 +222,11 @@ class TrackingUART(UARTIO):
         tx_pin=UART_TX_PIN,
         rx_pin=UART_RX_PIN,
         baudrate=UART_BAUDRATE,
-        packet_prefix=UART_PACKET_PREFIX,
         send_period_ms=UART_SEND_PERIOD_MS,
+        handshake_period_ms=UART_HANDSHAKE_PERIOD_MS,
     ):
-        if (
-            not isinstance(packet_prefix, str) or
-            not packet_prefix or
-            "," in packet_prefix or
-            "\n" in packet_prefix
-        ):
-            raise ValueError("UART 数据包前缀不能为空，且不能包含逗号或换行")
+        if handshake_period_ms <= 0:
+            raise ValueError("握手重发周期必须大于 0")
 
         UARTIO.__init__(
             self,
@@ -210,8 +236,150 @@ class TrackingUART(UARTIO):
             baudrate,
             send_period_ms,
         )
-        self.packet_prefix = packet_prefix
-        self._next_frame_id = 0
+        self.handshake_period_ms = int(handshake_period_ms)
+        self._next_sequence = 0
+        self._ready_sequence = self._allocate_sequence()
+        self._last_ready_ms = None
+        self._peer_ready_received = False
+        self._ready_ack_received = False
+        self._rx_buffer = bytearray()
+
+    @property
+    def handshake_complete(self):
+        return self._peer_ready_received and self._ready_ack_received
+
+    def _allocate_sequence(self):
+        sequence = self._next_sequence
+        self._next_sequence = (self._next_sequence + 1) & 0xFF
+        return sequence
+
+    def _build_frame(self, message_type, payload=b"", sequence=None):
+        payload = bytes(payload)
+        if len(payload) > UART_FRAME_MAX_PAYLOAD:
+            raise ValueError("UART 数据区超过最大长度")
+        if sequence is None:
+            sequence = self._allocate_sequence()
+        sequence = int(sequence) & 0xFF
+
+        body = bytes((
+            UART_FRAME_VERSION,
+            int(message_type) & 0xFF,
+            sequence,
+            len(payload),
+        )) + payload
+        return bytes((UART_FRAME_MAGIC_0, UART_FRAME_MAGIC_1)) + \
+            body + bytes((_crc8(body),))
+
+    def send_frame(self, message_type, payload=b"", sequence=None):
+        """立即发送一帧，返回实际发送的 bytes。"""
+        self._require_initialized()
+        frame = self._build_frame(message_type, payload, sequence)
+        self.write(frame)
+        return frame
+
+    @staticmethod
+    def _find_magic(buffer):
+        for index in range(max(0, len(buffer) - 1)):
+            if (
+                buffer[index] == UART_FRAME_MAGIC_0 and
+                buffer[index + 1] == UART_FRAME_MAGIC_1
+            ):
+                return index
+        return -1
+
+    def _extract_frames(self):
+        frames = []
+        minimum_size = 7
+
+        while len(self._rx_buffer) >= 2:
+            magic_index = self._find_magic(self._rx_buffer)
+            if magic_index < 0:
+                if self._rx_buffer[-1] == UART_FRAME_MAGIC_0:
+                    del self._rx_buffer[:-1]
+                else:
+                    self._rx_buffer = bytearray()
+                break
+            if magic_index > 0:
+                del self._rx_buffer[:magic_index]
+            if len(self._rx_buffer) < minimum_size:
+                break
+
+            payload_length = self._rx_buffer[5]
+            if payload_length > UART_FRAME_MAX_PAYLOAD:
+                del self._rx_buffer[0]
+                continue
+
+            frame_size = minimum_size + payload_length
+            if len(self._rx_buffer) < frame_size:
+                break
+
+            body_end = 6 + payload_length
+            body = bytes(self._rx_buffer[2:body_end])
+            received_crc = self._rx_buffer[body_end]
+            if (
+                self._rx_buffer[2] != UART_FRAME_VERSION or
+                _crc8(body) != received_crc
+            ):
+                del self._rx_buffer[0]
+                continue
+
+            frames.append((
+                self._rx_buffer[3],
+                self._rx_buffer[4],
+                bytes(self._rx_buffer[6:body_end]),
+            ))
+            del self._rx_buffer[:frame_size]
+
+        return frames
+
+    def _handle_frame(self, message_type, sequence, payload):
+        if message_type == UART_MESSAGE_READY and len(payload) == 0:
+            self._peer_ready_received = True
+            self.send_frame(
+                UART_MESSAGE_READY_ACK,
+                bytes((sequence,)),
+            )
+        elif (
+            message_type == UART_MESSAGE_READY_ACK and
+            len(payload) == 1 and
+            payload[0] == self._ready_sequence
+        ):
+            self._ready_ack_received = True
+
+    def poll(self):
+        """读取并解析所有可用数据，返回本次收到的有效帧列表。"""
+        self._require_initialized()
+        if self.any() > 0:
+            received = self.read()
+            if received:
+                self._rx_buffer.extend(received)
+
+        frames = self._extract_frames()
+        for message_type, sequence, payload in frames:
+            self._handle_frame(message_type, sequence, payload)
+        return frames
+
+    def update_handshake(self, now_ms=None):
+        """处理握手并按周期重发 READY；完成后返回 True。"""
+        self._require_initialized()
+        if now_ms is None:
+            now_ms = _ticks_ms()
+
+        self.poll()
+        if (
+            not self._ready_ack_received and
+            (
+                self._last_ready_ms is None or
+                _ticks_diff(now_ms, self._last_ready_ms) >=
+                self.handshake_period_ms
+            )
+        ):
+            self.send_frame(
+                UART_MESSAGE_READY,
+                sequence=self._ready_sequence,
+            )
+            self._last_ready_ms = now_ms
+        return self.handshake_complete
 
     def send_target(
         self,
@@ -222,18 +390,20 @@ class TrackingUART(UARTIO):
         force=False,
         now_ms=None,
     ):
-        """周期发送当前目标；未到周期返回 None，否则返回数据包。"""
+        """周期发送 TARGET 帧；握手未完成或未到周期时返回 None。"""
         self._require_initialized()
         if now_ms is None:
             now_ms = _ticks_ms()
+        if not self.handshake_complete:
+            self.update_handshake(now_ms)
+            return None
         if not force and not self.ready_to_send(now_ms):
             return None
 
         if frame_id is None:
-            frame_id = self._next_frame_id
-            self._next_frame_id += 1
+            frame_id = self._allocate_sequence()
         else:
-            frame_id = int(frame_id)
+            frame_id = int(frame_id) & 0xFF
 
         valid_value = 1 if valid else 0
         if valid_value:
@@ -243,17 +413,55 @@ class TrackingUART(UARTIO):
             send_x = 0
             send_y = 0
 
-        packet = "{},{},{},{},{}\n".format(
-            self.packet_prefix,
-            frame_id,
-            valid_value,
-            send_x,
-            send_y,
+        payload = bytes((valid_value,)) + \
+            _encode_int16(send_x) + _encode_int16(send_y)
+        frame = self.send_frame(
+            UART_MESSAGE_TARGET,
+            payload,
+            sequence=frame_id,
         )
-        self.write_periodic(packet, force=True, now_ms=now_ms)
-        return packet
+        self._last_send_ms = now_ms
+        return frame
 
     def reset_frame_id(self, frame_id=0):
         """设置下一次自动发送使用的帧号。"""
-        self._next_frame_id = int(frame_id)
+        self._next_sequence = int(frame_id) & 0xFF
         return self
+
+    def deinitialize(self):
+        UARTIO.deinitialize(self)
+        self._last_ready_ms = None
+        self._peer_ready_received = False
+        self._ready_ack_received = False
+        self._rx_buffer = bytearray()
+
+    close = deinitialize
+
+
+def run_uart_handshake_test():
+    """等待天猛星握手，成功后持续发送固定目标测试帧。"""
+    uart = TrackingUART().initialize()
+    print("UART test: waiting for MSPM0 handshake...")
+    try:
+        while not uart.update_handshake():
+            time.sleep_ms(10)
+
+        print("UART test: handshake complete")
+        print("TARGET valid=1 x={} y={}".format(
+            UART_TEST_TARGET_X,
+            UART_TEST_TARGET_Y,
+        ))
+        while True:
+            uart.poll()
+            uart.send_target(
+                UART_TEST_TARGET_VALID,
+                UART_TEST_TARGET_X,
+                UART_TEST_TARGET_Y,
+            )
+            time.sleep_ms(10)
+    finally:
+        uart.deinitialize()
+
+
+if __name__ == "__main__":
+    run_uart_handshake_test()

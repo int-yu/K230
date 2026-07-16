@@ -8,10 +8,10 @@
 | --- | --- |
 | `config.py` | 摄像头、显示、串口和各检测器的默认参数 |
 | `camera_io.py` | `Sensor`、`Display`、`MediaManager` 生命周期 |
-| `uart_io.py` | FPIOA、UART 生命周期、原始读写和目标偏差协议 |
+| `uart_io.py` | FPIOA、UART 生命周期、二进制数据帧、双向握手和目标偏差协议；可直接运行固定信号测试 |
 | `bluetooth_uart.py` | UART2 蓝牙单字符指令接收与缓存，导出 `BluetoothUART` |
 | `color.py` | 彩色光点检测，导出 `ColorSpotDetector` |
-| `road.py` | 红色 T/十字/普通路径和黑色双排虚线结束符检测，导出 `RoadSymbolDetector` |
+| `road.py` | T/十字主连通轮廓和黑色双排虚线结束符检测，导出 `RoadSymbolDetector` |
 | `tangle.py` | 黑框白心方框检测，导出 `RectangleDetector`；直接运行时也是完整追踪程序 |
 | `pencil_rectangle.py` | 细铅笔线方框检测，导出 `PencilRectangleDetector`；多重方框中选择估算边框最细者 |
 | `corner_cycle.py` | 独立的方框四角顺时针停留、移动和串口输出应用 |
@@ -137,7 +137,9 @@ tracking_uart.send_target(
 
 ## 寻路符号模块
 
-`road.py` 识别红色 T 型、红色十字型、黑色双排虚线结束符以及普通红色路径。模块只使用 HSV 掩膜、固定比例五区、轮廓和直线拟合，不做骨架化，也不保存上一帧结果。
+`road.py` 只识别 T 型、十字型和黑色双排虚线结束符，不再返回普通 `line`。场地标记只有红色和黑色，因此 T/十字不再执行 HSV 红色识别：检测器对 RGB 图像的绿色通道执行 Otsu 反向二值化，把红色和黑色统一作为前景，再选择真正横跨左右、经过中心附近并向下延伸的单个主轮廓。与路线不连通的黑色数字、边框和远处物体不会参与 T/十字几何计算。
+
+默认先把 `640×480` 输入缩放到 `320×240` 检测，所有中心、端点和线段坐标会自动映射回输入画面尺寸。模块不做骨架化，不保存上一帧结果。
 
 ```python
 from road import RoadSymbolDetector
@@ -153,31 +155,31 @@ if result is not None:
     confidence = result["confidence"]
 ```
 
-判定优先级固定为：
+检测顺序为：
 
 ```text
-end → cross → t → line → None
+T/十字主连通轮廓 → 黑色 END → None
 ```
 
-- `t`：左、右、下和中心区有红色，上区无红色；返回 `left/right/down` 三个端点。
-- `cross`：上、下、左、右和中心区都有红色；返回 `up/down/left/right` 四个端点。
-- `end`：至少三块矩形黑块组成一行，两行满足间距和横向重合要求，并且中央存在红色路径；返回 `near/terminal`。
-- `line`：没有特殊符号，但仍存在纵向红色路径；返回 `near/far`，其中 `near` 是画面下方的可见端，`far` 是画面上方的可见端。
+- `t`：主轮廓横跨左右、向下延伸，但没有到达上方区域；返回 `left/right/down`。
+- `cross`：同一个主轮廓横跨左右并同时延伸到上、下方；返回 `up/down/left/right`。
+- `end`：没有 T/十字主轮廓时才生成 RGB 黑色掩膜；至少三块矩形黑块组成一行，两行满足间距和横向重合要求。返回两条 `dash_lines`，并在能够提取中央路径时返回 `near/terminal`。
 
-T 和十字分别使用左右红色质心、上下方向红色质心拟合水平和垂直中心线。`intersection` 是两条中心线的交点，`segments` 从该交点连接到每个最远可见端点。结束符只绘制两条黑块行中心线、`END` 标签，以及红色路径的 `near/terminal` 和连线，不逐块绘制外接框。
+T 和十字只使用选中主轮廓内部的像素拟合水平、垂直中心线。`intersection` 是两条中心线的交点，`segments` 从交点连接到各方向最远可见端点。黑色背景物体即使落入五个方向区域，只要没有和路线形成同一个主轮廓，就不会把 T 误判成十字。结束符只绘制两条黑块行中心线、`END` 标签和可用的中央路径，不逐块绘制外接框。
 
 统一返回字段：
 
 | 字段 | 含义 |
 | --- | --- |
-| `symbol` | `t`、`cross`、`end` 或 `line` |
-| `center_x`, `center_y` | T/十字为交点；结束符为两排虚线整体中心；普通路径为 `near/far` 中点 |
+| `symbol` | `t`、`cross` 或 `end` |
+| `center_x`, `center_y` | T/十字为交点；结束符为两排虚线整体中心 |
 | `confidence` | 当前符号的结构评分，范围为 `0..1`，不是概率，也不能与其他检测器横向比较 |
 | `intersection` | T/十字交点；其他状态为 `None` |
 | `endpoints` | 各状态对应的方向端点字典 |
 | `segments` | 需要绘制的中心线段，每段为 `(起点, 终点)` |
 | `dash_lines` | `end` 的上、下两条黑块行中心线；其他状态为空元组 |
-| `arm_scores` | `up/down/left/right/center` 五区的红色像素占用率 |
+| `arm_scores` | 选中主轮廓在 `up/down/left/right/center` 五区的占用率；END 固定为 0 |
+| `foreground_threshold` | 当前帧绿色通道 Otsu 自动阈值，便于上板诊断光照 |
 
 需要自己控制绘制顺序或验证检测不修改画面时：
 
@@ -191,19 +193,21 @@ if result is not None:
 
 | 参数 | 默认值 | 含义 |
 | --- | ---: | --- |
-| `ROAD_ARM_MIN_OCCUPANCY` | `0.025` | 五区判定某方向存在红线的最低像素占用率 |
-| `ROAD_RED_HSV_RANGES` | 两段红色 HSV | 红色路径阈值，H 跨越 `0/179` 时必须保留两段 |
-| `ROAD_RED_MORPH_KERNEL_SIZE` | `5` | 红色掩膜闭运算核边长 |
-| `ROAD_BLACK_MAX_VALUE` | `90` | 结束符黑色掩膜允许的最大 HSV 明度 V |
+| `ROAD_DETECT_WIDTH/HEIGHT` | `320/240` | 内部检测分辨率；结果自动映射回输入画面 |
+| `ROAD_FOREGROUND_MORPH_KERNEL_SIZE` | `5` | 红黑统一前景的闭运算核边长 |
+| `ROAD_ROUTE_MIN_AREA_RATIO` | `0.002` | T/十字主轮廓最小面积比例 |
+| `ROAD_CROSS_TOP_MAX_RATIO` | `0.32` | 主轮廓顶部进入该高度比例以内时判为十字 |
+| `ROAD_BLACK_MAX_VALUE` | `90` | RGB 三通道都不超过该值时视为结束符黑块 |
 | `ROAD_DASH_MIN_COUNT_PER_ROW` | `3` | 每排结束虚线至少需要的黑块数 |
 | `ROAD_DASH_MIN_ROW_SEPARATION_RATIO` | `0.07` | 两排中心的最小纵向间距，占画面高度比例 |
 | `ROAD_DASH_MAX_ROW_SEPARATION_RATIO` | `0.30` | 两排中心的最大纵向间距，占画面高度比例 |
 | `ROAD_DASH_MIN_HORIZONTAL_OVERLAP` | `0.55` | 两排横向覆盖相对较短一排的最低重合率 |
-| `ROAD_PATH_CORRIDOR_HALF_WIDTH_RATIO` | `0.12` | 普通路径端点搜索走廊的半宽，占画面宽度比例 |
+| `ROAD_PATH_CORRIDOR_HALF_WIDTH_RATIO` | `0.12` | END 中央路径搜索走廊半宽，占画面宽度比例 |
+| `ROAD_END_MIN_PATH_LENGTH_RATIO` | `0.12` | END 返回 `near/terminal` 所需的最小向下路径长度 |
 
 可直接运行 `road.py` 调用 `run_road_demo()`。演示使用 `CameraIO(display_target=DISPLAY_TARGET_IDE)`，并在送入 IDE 显示前绘制当前主循环 FPS。
 
-当前实拍目录回归结果：T 全部文件 `50/50`、按内容去重 `17/17`；十字全部文件 `14/14`、去重 `11/11`；结束符全部文件 `5/5`、去重 `4/4`。T/十字样图未误报结束符，结束符样图未误报 T/十字。普通路径目前使用居中、偏移、轻微倾斜和上端截断的合成图验证，尚无独立普通直线路径实拍准确率数据。
+当前实拍目录回归结果：T 全部文件 `50/50`、按内容去重 `17/17`；十字全部文件 `14/14`、去重 `11/11`；结束符全部文件 `5/5`、去重 `4/4`。全部回归均在默认 `320×240` 内部检测分辨率下完成。
 
 ## 方框检测模块
 
@@ -361,10 +365,10 @@ corner_cycle.run_corner_cycle()
 
 四角在每帧中统一排序为 `TL -> TR -> BR -> BL`，不直接依赖 OpenCV 返回轮廓点的起点和方向。屏幕会显示四个角点编号、当前插值点、阶段剩余时间和相对坐标。
 
-串口发送的仍是：
+串口发送使用统一 TARGET 二进制帧，PAYLOAD 为：
 
 ```text
-T,frame,valid,x,y\n
+valid:u8 | x:int16_LE | y:int16_LE
 ```
 
 其中 `x = 画面中心X - 当前轨迹点X`，`y = 画面中心Y - 当前轨迹点Y`。方框丢失时发送 `valid=0,x=0,y=0`，循环计时暂停；重新检测到方框后从暂停位置继续，不发送历史角点坐标。
@@ -452,21 +456,27 @@ digit_detector = DigitDetector(template_dir="_digit_templates")
 - RX：GPIO4
 - 波特率：115200
 - 周期发送最小间隔：10 ms
+- READY 重发周期：100 ms
 - 8 数据位、无校验、1 停止位
 
-接线时，K230 的 TX（GPIO3）连接单片机 RX，K230 的 RX（GPIO4）连接单片机 TX，两块板还需要共地。如果只需要 K230 单向发送，可以不连接 K230 的 RX，但 `TrackingUART` 仍会按配置完成 GPIO4 的映射。
+接线时，K230 的 TX（GPIO3）连接单片机 PA22（UART2 RX），K230 的 RX（GPIO4）连接单片机 PA21（UART2 TX），两块板还需要共地。当前协议需要双向握手，TX、RX 都必须连接。
 
 最少调用方式：
 
 ```python
+import time
+
 from tangle import RectangleDetector
 from uart_io import TrackingUART
 
-# 主循环外初始化一次。
+# 主循环外初始化一次，并等待双方完成 READY/READY_ACK。
 rectangle_detector = RectangleDetector()
 tracking_uart = TrackingUART(send_period_ms=10).initialize()
+while not tracking_uart.update_handshake():
+    time.sleep_ms(10)
 
 # 主循环中直接传入检测器本帧更新的私有状态。
+tracking_uart.poll()
 tracking_uart.send_target(
     rectangle_detector._target_valid,
     rectangle_detector._offset_x,
@@ -479,7 +489,7 @@ tracking_uart.deinitialize()
 
 `send_period_ms` 是两次实际发送之间的最小间隔。主循环可以每帧调用
 `send_target()`；未到周期时方法返回 `None`，不会写 UART。到达周期时返回
-实际数据包字符串。需要忽略周期立即发送时传入 `force=True`。
+实际数据帧 `bytes`。需要忽略周期立即发送时传入 `force=True`。
 
 ```python
 packet = tracking_uart.send_target(
@@ -489,33 +499,34 @@ packet = tracking_uart.send_target(
 )
 
 if packet is not None:
-    print("本次已发送：{}".format(packet))
+    print("本次发送字节数：{}".format(len(packet)))
 ```
 
 需要注意：10 ms 对应最高 100 次/秒。当前摄像头配置为 30 FPS，相邻画面
 约 33 ms，因此每帧调用时仍然会每帧发送。如果目的是降低 30 FPS 主循环的
 发送次数，应把周期设为大于约 33 ms，例如 50 ms 或 100 ms。
 
-`send_target()` 的数据格式为一行 ASCII：
+所有消息使用同一种二进制帧：
 
 ```text
-T,frame,valid,x,y\n
+AA 55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
 ```
 
-例如：
+| 字段 | 长度 | 含义 |
+| --- | ---: | --- |
+| `AA 55` | 2 | 固定帧头，用于丢字节后重新同步 |
+| `VER` | 1 | 协议版本，当前为 `0x01` |
+| `TYPE` | 1 | `READY=0x01`、`READY_ACK=0x02`、`TARGET=0x10` |
+| `SEQ` | 1 | 帧序号，达到 255 后回到 0 |
+| `LEN` | 1 | PAYLOAD 长度，当前最大 32 |
+| `PAYLOAD` | LEN | 消息数据 |
+| `CRC8` | 1 | CRC-8/ATM，多项式 `0x07`，校验范围为 VER 到 PAYLOAD |
+
+TARGET 的 PAYLOAD 固定为 5 字节：
 
 ```text
-T,25,1,-18,7
+valid:u8 | offset_x:int16_LE | offset_y:int16_LE
 ```
-
-字段含义：
-
-| 字段 | 含义 |
-| --- | --- |
-| `T` | 数据包类型，可通过 `packet_prefix` 修改 |
-| `frame` | 帧号；不传 `frame_id` 时由模块从 0 自动递增 |
-| `valid` | `1` 表示当前帧有目标，`0` 表示无目标；接收端应先判断此字段 |
-| `x`, `y` | 目标相对画面中心的偏差 |
 
 当 `valid=0` 时，模块会强制把 `x`、`y` 发送为 0。此时的 `0,0` 只是无效包占位值，单片机不能把它解释为“目标位于画面中心”。需要显式使用主程序帧号时：
 
@@ -537,16 +548,23 @@ tracking_uart = TrackingUART(
     rx_pin=4,
     baudrate=230400,
     send_period_ms=50,
+    handshake_period_ms=100,
 ).initialize()
 ```
 
-除目标协议外，模块也提供 `write()`、`write_periodic()`、`any()`、`read()` 和 `readline()`，可以用于自定义协议。`write()` 始终立即发送，`write_periodic()` 才应用周期：
+`update_handshake()` 会周期发送 READY；收到对方 READY 后立即回复 READY_ACK。只有既收到对方 READY、又收到对方对本机 READY 的 ACK，`handshake_complete` 才为真。双方不能采用“先等待接收、收到后才发送”的流程，否则会互相死锁。
+
+直接在 K230 上运行 `uart_io.py` 会执行通信测试：握手成功前保持等待，成功后每 10 ms 尝试发送固定 `valid=1、x=123、y=-45` TARGET 帧。天猛星 OLED 最后一行应显示：
+
+```text
+K:1 X:+0123 Y:-0045
+```
+
+除目标协议外，模块也提供 `send_frame()`、`poll()`、`write()`、`any()` 和 `read()`。业务循环必须持续调用 `poll()`，以便处理对方重新发送的握手消息：
 
 ```python
-tracking_uart.write("HELLO\n")
-
-if tracking_uart.any() > 0:
-    received = tracking_uart.read()
+tracking_uart.poll()
+tracking_uart.send_frame(0x20, b"custom payload")
 ```
 
 不要在每一帧中重新创建或初始化 `TrackingUART`。导入 `uart_io.py` 不会占用 GPIO；只有调用 `initialize()` 才会加载 `machine` 并初始化硬件。
@@ -597,7 +615,7 @@ elif command == "p":
 模块默认参数统一放在 `config.py`，并按模块使用前缀：
 
 - `COLOR_...`：彩色光点。
-- `ROAD_...`：红色寻路符号和黑色双排虚线结束符。
+- `ROAD_...`：T/十字主轮廓和黑色双排虚线结束符。
 - `RECTANGLE_...`：方框。
 - `PENCIL_RECTANGLE_...`：细铅笔线方框。
 - `DIGIT_...`：数字。

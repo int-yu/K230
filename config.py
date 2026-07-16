@@ -28,8 +28,8 @@ UART_ID = 1
 UART_TX_PIN = 3
 UART_RX_PIN = 4
 UART_BAUDRATE = 115200
-UART_PACKET_PREFIX = "T"
 UART_SEND_PERIOD_MS = 10
+UART_HANDSHAKE_PERIOD_MS = 100
 
 # 蓝牙串口默认使用 UART2。不同蓝牙模块的默认波特率可能不同。
 BLUETOOTH_UART_ID = 2
@@ -214,13 +214,19 @@ COLOR_DRAW_CROSS_SIZE = 10
 # 寻路符号检测参数（road.py）
 # ============================================================
 
-# OpenCV HSV：H 为 0..179，S/V 为 0..255。红色跨越 H 首尾。
-ROAD_RED_HSV_RANGES = (
-    ((0, 80, 80), (15, 255, 255)),
-    ((165, 80, 80), (179, 255, 255)),
-)
-ROAD_RED_MORPH_KERNEL_SIZE = 5
-ROAD_RED_MIN_CONTOUR_AREA_RATIO = 0.00005
+# 在较低分辨率上检测，再把坐标映射回原图。
+ROAD_DETECT_WIDTH = 320
+ROAD_DETECT_HEIGHT = 240
+
+# 场地前景只有红色和黑色：二者的绿色通道都明显低于白色背景。
+# 使用绿色通道 Otsu 代替 RGB->HSV 和两段红色阈值。
+ROAD_FOREGROUND_MORPH_KERNEL_SIZE = 5
+ROAD_ROUTE_MIN_AREA_RATIO = 0.002
+ROAD_ROUTE_LEFT_MAX_RATIO = 0.32
+ROAD_ROUTE_RIGHT_MIN_RATIO = 0.68
+ROAD_ROUTE_DOWN_MIN_RATIO = 0.68
+ROAD_ROUTE_MAX_TOP_RATIO = 0.75
+ROAD_CROSS_TOP_MAX_RATIO = 0.32
 
 # 五区域均使用 (x0, y0, x1, y1) 画面比例坐标。
 ROAD_ROI_UP = (0.20, 0.00, 0.80, 0.32)
@@ -228,13 +234,16 @@ ROAD_ROI_DOWN = (0.20, 0.68, 0.80, 1.00)
 ROAD_ROI_LEFT = (0.00, 0.25, 0.32, 0.75)
 ROAD_ROI_RIGHT = (0.68, 0.25, 1.00, 0.75)
 ROAD_ROI_CENTER = (0.25, 0.25, 0.75, 0.75)
+# 只用于把选中主轮廓的方向占用率归一化为结构 confidence。
 ROAD_ARM_MIN_OCCUPANCY = 0.025
 
-# 中央路径拟合只在估计中心线附近取点，避免远处红色物体改变端点。
+# END 的中央路径只在结束符中心附近取点。
 ROAD_PATH_CORRIDOR_HALF_WIDTH_RATIO = 0.12
 ROAD_PATH_MIN_PIXELS_RATIO = 0.00020
+ROAD_END_MIN_PATH_LENGTH_RATIO = 0.12
 
 # 黑色双排虚线结束符。
+# RGB 三个通道都不超过该值时视为黑色，不再依赖 HSV。
 ROAD_BLACK_MAX_VALUE = 90
 ROAD_BLACK_MORPH_KERNEL_SIZE = 3
 ROAD_DASH_MIN_AREA_RATIO = 0.00039
