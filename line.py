@@ -22,6 +22,13 @@ try:
 except ImportError:
     import numpy as np
 
+import sys
+
+# CanMV 按绝对路径启动脚本时不会把脚本所在目录加入 sys.path，
+# 会导致 import config 失败。这里补上，重复导入不会重复追加。
+if "/sdcard/K230" not in sys.path:
+    sys.path.append("/sdcard/K230")
+
 from config import (
     LINE_BAND_COUNT,
     LINE_BAND_HEIGHT,
@@ -589,8 +596,13 @@ class JunctionConfirmState:
         self.streak = 0
 
 
-def run_line_demo(display_target=None, enable_uart=True):
-    """使用 CameraIO 运行红线巡线演示，并按需发送 LINE 帧。"""
+def run_line_demo(display_target=None, enable_uart=False):
+    """使用 CameraIO 运行红线巡线演示，并按需发送 LINE 帧。
+
+    enable_uart 默认关闭。开启后会阻塞等待与单片机握手，且该等待没有
+    超时；单独调视觉时若单片机没接或没在跑，程序会停在握手上不出画面。
+    需要发送 LINE 帧时显式传入 True。
+    """
     import gc
     import sys
     import time

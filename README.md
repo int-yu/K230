@@ -357,12 +357,16 @@ import line
 line.run_line_demo()
 ```
 
-默认会先创建 `TrackingUART` 并阻塞等待握手，然后每帧发送 LINE 帧。只调视觉时关掉
-串口：
+`enable_uart` 默认为 `False`，只做视觉和显示，方便单独调参。需要发送 LINE 帧时
+显式开启：
 
 ```python
-line.run_line_demo(enable_uart=False)
+line.run_line_demo(enable_uart=True)
 ```
+
+开启后会先创建 `TrackingUART` 并阻塞等待握手。**该等待没有超时**：单片机没接或
+没在跑时，程序会停在握手上，画面不会出现。默认关闭就是为了避免把这种情况误认为
+程序崩溃。
 
 主循环用 `JunctionConfirmState` 做连续帧确认，`junction` 连续 `3` 帧成立后进入切换
 数字识别的分支。该分支目前是 `TODO`，只在画面上显示 `JUNCTION`，接入 `num.py` 的
@@ -808,6 +812,21 @@ elif command == "p":
 ```
 
 `available()` 会先读取 UART，再返回缓存中的指令数量；`clear()` 同时清空软件缓存和当前 UART 残留数据。追踪串口使用 UART1（GPIO3/4），蓝牙接收使用 UART2（GPIO11/12），两者可以同时工作。程序退出时应调用 `deinitialize()`。
+
+## 板端模块导入路径
+
+CanMV 按绝对路径启动脚本时，不会把脚本所在目录加入 `sys.path`，`import config`
+会失败。所有导入 `config` 的模块都在导入前补上了板端目录：
+
+```python
+import sys
+
+if "/sdcard/K230" not in sys.path:
+    sys.path.append("/sdcard/K230")
+```
+
+这段必须放在 `from config import ...` **之前**，路径先就位才能导入。重复导入模块
+不会重复追加。模块实际存放位置不是 `/sdcard/K230` 时，需要同步修改这个字面量。
 
 ## 参数管理规则
 

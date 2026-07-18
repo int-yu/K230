@@ -10,6 +10,13 @@ import time
 
 import cv2
 
+import sys
+
+# CanMV 按绝对路径启动脚本时不会把脚本所在目录加入 sys.path，
+# 会导致 import config 失败。这里补上，重复导入不会重复追加。
+if "/sdcard/K230" not in sys.path:
+    sys.path.append("/sdcard/K230")
+
 from config import (
     PENCIL_RECTANGLE_ADAPTIVE_BLOCK_SIZE,
     PENCIL_RECTANGLE_ADAPTIVE_C,
