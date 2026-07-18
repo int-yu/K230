@@ -12,6 +12,7 @@
 | `bluetooth_uart.py` | UART2 蓝牙单字符指令接收与缓存，导出 `BluetoothUART` |
 | `color.py` | 彩色光点检测，导出 `ColorSpotDetector` |
 | `road.py` | T/十字主连通轮廓和黑色双排虚线结束符检测，导出 `RoadSymbolDetector` |
+| `line.py` | 红色引导线分带循迹和路口提示，导出 `LineTrackDetector`；直接运行时也是完整循迹程序 |
 | `tangle.py` | 黑框白心方框检测，导出 `RectangleDetector`；直接运行时也是完整追踪程序 |
 | `pencil_rectangle.py` | 细铅笔线方框检测，导出 `PencilRectangleDetector`；多重方框中选择估算边框最细者 |
 | `corner_cycle.py` | 独立的方框四角顺时针停留、移动和串口输出应用 |
@@ -26,6 +27,7 @@
 ```python
 from color import ColorSpotDetector
 from road import RoadSymbolDetector
+from line import LineTrackDetector
 from tangle import RectangleDetector
 from pencil_rectangle import PencilRectangleDetector
 from num import DigitDetector
@@ -33,6 +35,7 @@ from num import DigitDetector
 # 主循环外初始化一次。数字模板也只会在这里加载一次。
 color_detector = ColorSpotDetector()
 road_detector = RoadSymbolDetector()
+line_detector = LineTrackDetector()
 rectangle_detector = RectangleDetector()
 pencil_rectangle_detector = PencilRectangleDetector()
 digit_detector = DigitDetector()
@@ -40,6 +43,7 @@ digit_detector = DigitDetector()
 # 获取 frame 后调用；process 默认会在 frame 上绘图。
 spot = color_detector.process(frame)
 road_result = road_detector.process(frame)
+line_result = line_detector.process(frame)
 rectangle = rectangle_detector.process(frame)
 pencil_rectangle = pencil_rectangle_detector.process(frame)
 digit_result = digit_detector.process(frame)
@@ -208,6 +212,149 @@ if result is not None:
 可直接运行 `road.py` 调用 `run_road_demo()`。演示使用 `CameraIO(display_target=DISPLAY_TARGET_IDE)`，并在送入 IDE 显示前绘制当前主循环 FPS。
 
 当前实拍目录回归结果：T 全部文件 `50/50`、按内容去重 `17/17`；十字全部文件 `14/14`、去重 `11/11`；结束符全部文件 `5/5`、去重 `4/4`。全部回归均在默认 `320×240` 内部检测分辨率下完成。
+
+## 红线巡线模块
+
+`line.py` 面向 2021 年电赛 F 题的红色引导线。它把画面下部切成 5 条水平带，每条带
+内求出红线的横向位置，等效于一列沿前进方向排开的虚拟灰度传感器：最近一条带给
+单片机做 PID，最远一条带提供弯道和路口的前瞻。
+
+它与 `road.py` 分工不同，不能互相替代：`road.py` 用绿色通道 Otsu 把红色和黑色
+**合并**为前景，用于识别 T/十字/END 的整体结构；巡线必须把红线和黑色数字纸、黑色
+墙线**分开**，因此使用 RGB 通道差分。
+
+```python
+from line import LineTrackDetector
+
+# 主循环外初始化一次。
+line_detector = LineTrackDetector()
+
+# frame 为 RGB 图像；默认同时绘制识别结果。
+result = line_detector.process(frame)
+
+if result is not None:
+    near_offset = result["offsets"][0]
+    junction = result["junction"]
+```
+
+红色判据为三个通道的关系，不做 HSV 转换：
+
+```text
+红 = (R - G > LINE_RED_MIN_DIFF) 且 (R - B > LINE_RED_MIN_DIFF) 且 (R > LINE_RED_MIN_VALUE)
+```
+
+黑线和白布的 `R-G` 都接近 0，只有红色的差值很大。默认阈值由 `pic/line` 的 29 张
+实拍图标定：红线像素的 `R-G` 第 1 百分位为 61，非红像素的第 99 百分位为 0，
+阈值 50 落在这段空白区间中间。
+
+检测流程为：
+
+```text
+裁剪画面下部 → 缩放一次到 160x60 → 通道差分掩膜 → 逐带列投影 → run 提取 → 路口判定
+```
+
+「列投影」指沿竖直方向把一条带的 12 行求和压成 1 行，得到 160 个数，第 `i` 个数
+是第 `i` 列中红色像素的个数，索引即 x 坐标。取连续列段（run）的中心作为红线位置，
+不使用整行质心：路口横线会把质心拽偏，run 不会。
+
+扫描使用两个阈值。主线基本竖直，会填满整条带的 12 行，列计数接近 12；路口横线只
+占带内很少几行，列计数只有 3~5。因此高阈值提取的 run 不会把横线并进主线，主线
+中心在路口不会被带偏；低阈值只用来测量红色向左右延伸到哪里，供分支判定使用。
+
+多个 run 时，最近一条带选最靠近画面中心的，其余各带选中心最接近上一条带的那个。
+近带锚定主线，横向分支抢不走远带。
+
+统一返回字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `center_x`, `center_y` | 最近一条有效带的红线中心 |
+| `offsets` | 5 条带的偏差元组，`画面中心X - 带中心X`，单位为原图像素 |
+| `band_valid` | 5 条带各自是否检测到主线 |
+| `valid_band_count` | 有效带数量 |
+| `bands` | 每条带的完整信息，含 `runs`、`mass_ratio`、`edge_first/edge_last` |
+| `confidence` | 有效带比例与带间连续性的加权分数，范围 `0..1`，不能与其他检测器横向比较 |
+| `mass_ratio` | 逐带红色超量比的最大值，路口判定的主判据 |
+| `junction_flags` | 路口状态位 |
+| `junction` | `junction_flags` 的 bit0 是否置位 |
+| `junction_band` | 超量比最大的带序号，可粗略反映路口距离 |
+| `roi_top`, `roi_bottom` | 本帧检测区域在原图中的上下边界 |
+
+`junction_flags` 的位定义：
+
+| 位 | 含义 |
+| --- | --- |
+| bit0 | 接近路口 |
+| bit1 | 左侧存在分支 |
+| bit2 | 右侧存在分支 |
+| bit3 | 丢线 |
+
+路口判定不额外调用 `RoadSymbolDetector`，只复用已有的列投影统计：
+
+```text
+预期红量 = 各带主线 run 宽度的中位数 x 带高
+逐带超量比 = 该带红色像素数 / 预期红量
+```
+
+比值必须**逐带取最大**，不能把 5 条带加总——横线通常只落在一到两条带里，求和会
+把它稀释掉。该判据不受横线倾斜影响（横线无论多斜都要横穿整个视野，斜只是把红色
+像素重新分配到不同的带），也不会把弯道误判成路口（弯道时主线自身变宽，分子分母
+一起变大，比值仍在 1 附近）。
+
+统计异常带时**不要求该带有主线**：T 型路口横线所在的那条带主线已经到头，带内只剩
+横穿的红色，这正是最典型的路口带。左右分支要在所有超量带上累计，因为倾斜的横线
+会被带边界切成两段落进相邻两条带。
+
+主要调参项：
+
+| 参数 | 默认值 | 含义 |
+| --- | ---: | --- |
+| `LINE_ROI_TOP_RATIO` | `0.32` | 检测区域上沿占画面高度比例 |
+| `LINE_DETECT_WIDTH` | `160` | 检测区域缩放后的宽度 |
+| `LINE_BAND_COUNT` | `5` | 水平带数量，带间无空隙 |
+| `LINE_BAND_HEIGHT` | `12` | 每条带缩放后的行数 |
+| `LINE_RED_MIN_DIFF` | `50` | `R-G` 和 `R-B` 的最小差值 |
+| `LINE_RED_MIN_VALUE` | `70` | 红色像素的最低 R 通道值 |
+| `LINE_MAIN_MIN_COLUMN_COUNT` | `8` | 提取主线 run 的列计数阈值 |
+| `LINE_EDGE_MIN_COLUMN_COUNT` | `2` | 测量红色横向范围的列计数阈值 |
+| `LINE_RUN_MAX_GAP` | `2` | run 内允许合并的空列间隔 |
+| `LINE_MIN_VALID_BANDS` | `2` | 低于该有效带数时返回 `None` |
+| `LINE_JUNCTION_MASS_RATIO` | `1.50` | 判为路口的红色超量比 |
+| `LINE_JUNCTION_CONFIRM_FRAMES` | `3` | 主程序切数字识别的连续确认帧数 |
+
+`LINE_JUNCTION_MASS_RATIO` 的默认值来自实拍标定，三类场景完全分开：直道
+`1.00~1.22`、终点 `1.05~1.35`、路口 `1.77~6.06`，阈值 `1.50` 落在空隙中间。在
+29 张实拍图上路口召回 `25/25`，终点误报 `0/4`，直道误报 `0/29`。
+
+### 缩放方式不要改回 INTER_AREA
+
+`detect()` 使用 `INTER_LINEAR`。`INTER_AREA` 的开销由**源像素数**决定，它会把整个
+检测区域读一遍做面积平均，实测比 `INTER_LINEAR` 慢 15 倍以上，会把只取画面下部
+省下的时间全部抵消掉。红线有 50 像素以上宽，通道差分阈值又极具选择性，缩放时的
+抗锯齿没有实际价值。改动这一行前请先测帧率。
+
+同理，列投影结果在遍历前会先 `tolist()`。逐个索引数组元素每次都要装箱，实测比先
+转列表慢约 3 倍，在解释执行的板端差距只会更大。
+
+### 直接运行
+
+```python
+import line
+
+line.run_line_demo()
+```
+
+默认会先创建 `TrackingUART` 并阻塞等待握手，然后每帧发送 LINE 帧。只调视觉时关掉
+串口：
+
+```python
+line.run_line_demo(enable_uart=False)
+```
+
+主循环用 `JunctionConfirmState` 做连续帧确认，`junction` 连续 `3` 帧成立后进入切换
+数字识别的分支。该分支目前是 `TODO`，只在画面上显示 `JUNCTION`，接入 `num.py` 的
+位置已经标出。`JunctionConfirmState` 只服务于状态切换，不属于检测器，也不会把历史
+结果当成当前帧的检测结果发送。
 
 ## 方框检测模块
 
@@ -513,7 +660,7 @@ AA 55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
 | --- | ---: | --- |
 | `AA 55` | 2 | 固定帧头，用于丢字节后重新同步 |
 | `VER` | 1 | 协议版本，当前为 `0x01` |
-| `TYPE` | 1 | `READY=0x01`、`READY_ACK=0x02`、`TARGET=0x10` |
+| `TYPE` | 1 | `READY=0x01`、`READY_ACK=0x02`、`TARGET=0x10`、`LINE=0x11` |
 | `SEQ` | 1 | 帧序号，达到 255 后回到 0 |
 | `LEN` | 1 | PAYLOAD 长度，当前最大 32 |
 | `PAYLOAD` | LEN | 消息数据 |
@@ -535,6 +682,47 @@ tracking_uart.send_target(
     frame_id=frame_count,
 )
 ```
+
+巡线使用独立的 LINE 帧，`TYPE` 为 `0x11`，PAYLOAD 定长 12 字节，整帧 19 字节：
+
+```text
+valid:u8 | b0:int16_LE | b1:int16_LE | b2:int16_LE | b3:int16_LE | b4:int16_LE
+        | junction_flags:u8
+```
+
+`b0` 最近、`b4` 最远，单位为原图像素，符号与 TARGET 一致。直接把检测器本帧的返回
+值传进去，不需要自己拆字段：
+
+```python
+from line import LineTrackDetector
+from uart_io import TrackingUART
+
+line_detector = LineTrackDetector()
+tracking_uart = TrackingUART().initialize()
+tracking_uart.wait_for_handshake()
+
+result = line_detector.process(frame)
+tracking_uart.send_line(result)
+```
+
+`result` 为 `None` 时会发送 `valid=0`、五个偏差全 0、`junction_flags` 置 bit3 的
+丢线帧。和 TARGET 一样，这里的 `0` 只是无效占位值，单片机必须走丢线保护逻辑，
+不能把它当成「红线位于画面中心」喂给 PID。
+
+单片机侧只需要在现有解析循环里加一个分支，握手和 TARGET 都不用改：
+
+```c
+case 0x11:                                          /* LINE */
+    valid = payload[0];
+    for (int i = 0; i < 5; i++) {
+        offset[i] = (int16_t)(payload[1 + i * 2] |
+                              (payload[2 + i * 2] << 8));
+    }
+    junction_flags = payload[11];
+    break;
+```
+
+`UART_MESSAGE_DIGIT = 0x12` 已经预留给后续的病房号上报，当前未实现。
 
 临时修改串口参数不需要改 `config.py`：
 
@@ -622,6 +810,7 @@ elif command == "p":
 
 - `COLOR_...`：彩色光点。
 - `ROAD_...`：T/十字主轮廓和黑色双排虚线结束符。
+- `LINE_...`：红线分带循迹和路口判定。
 - `RECTANGLE_...`：方框。
 - `TANGLE_...`：方框追踪演示的打印、回收和绘制参数。
 - `CORNER_CYCLE_...`：四角轨迹的停留、移动、串口周期和绘制参数。
@@ -713,6 +902,14 @@ class MyTargetDetector:
 - `config.py`
 
 直接运行 `road.py` 的摄像头演示还需要 `camera_io.py`。
+
+红线巡线功能至少需要：
+
+- `line.py`
+- `config.py`
+
+直接运行 `line.py` 的循迹主程序还需要 `camera_io.py` 和 `uart_io.py`；
+传入 `enable_uart=False` 时不需要 `uart_io.py`。
 
 方框功能至少需要：
 
