@@ -17,6 +17,11 @@
 
 import cv2
 
+try:
+    import ulab.numpy as np
+except ImportError:
+    import numpy as np
+
 from config import (
     LINE_BAND_COUNT,
     LINE_BAND_HEIGHT,
@@ -140,10 +145,27 @@ class LineTrackDetector:
         self.draw_point_radius = int(draw_point_radius)
         self.draw_font_scale = float(draw_font_scale)
 
+        # CanMV 的精简版 OpenCV 没有 cv2.reduce，列投影只能用数组求和。
+        # 不同固件的 numpy/ulab 对 axis 参数支持不一致，这里探测一次，
+        # 之后每帧直接走选中的实现，不在主循环里做判断。
+        self._axis_sum = self._probe_axis_sum()
+
         self.last_result = None
         self._target_valid = False
         self._offset_x = 0
         self._offset_y = 0
+
+    @staticmethod
+    def _probe_axis_sum():
+        probe = np.zeros((2, 3), dtype=np.uint8)
+        try:
+            result = np.sum(probe, axis=0)
+        except (TypeError, AttributeError, ValueError):
+            return False
+        try:
+            return len(result) == 3
+        except TypeError:
+            return False
 
     # ------------------------------------------------------------
     # 串口状态
@@ -196,15 +218,22 @@ class LineTrackDetector:
     def _column_counts(self, band_mask):
         """沿竖直方向求和，得到每一列的红色像素数。
 
-        cv2.reduce 的第二个参数 0 表示沿第 0 维（行）求和，输出一行，
-        索引即列号，也就是 x 坐标。
+        沿第 0 维（行）求和，输出一行，索引即列号，也就是 x 坐标。
         """
-        reduced = cv2.reduce(
-            band_mask, 0, cv2.REDUCE_SUM, dtype=cv2.CV_32S,
-        )
+        if self._axis_sum:
+            counts = np.sum(band_mask, axis=0)
+        else:
+            # 逐行相加，只用最基础的数组加法。掩膜是 0/1，带高远小于
+            # 255，累加不会溢出 uint8。
+            counts = band_mask[0]
+            for row in range(1, self.band_height):
+                counts = counts + band_mask[row]
         # 后面要逐列扫描。逐个索引数组元素每次都要装箱，先转成 Python
         # 列表再遍历，实测快约 3 倍，在解释执行的板端差距只会更大。
-        return reduced[0].tolist()
+        try:
+            return counts.tolist()
+        except AttributeError:
+            return list(counts)
 
     def _scan_counts(self, counts):
         """单次扫描同时得到主线 run 和红色整体横向范围。

@@ -336,6 +336,19 @@ if result is not None:
 同理，列投影结果在遍历前会先 `tolist()`。逐个索引数组元素每次都要装箱，实测比先
 转列表慢约 3 倍，在解释执行的板端差距只会更大。
 
+### 列投影不要改用 cv2.reduce
+
+CanMV 固件上的精简版 OpenCV **没有 `cv2.reduce`**，用了会在上板运行时抛
+`AttributeError: 'module' object has no attribute 'reduce'`。列投影使用
+`np.sum(band_mask, axis=0)`，它在桌面上也比 `cv2.reduce` 更快。构造函数会探测一次
+当前固件是否支持 `axis` 参数并缓存结果，不支持时退回逐行相加，两条路径结果一致。
+
+板端使用精简版 OpenCV，新增代码前应确认所用函数在其他模块中已经出现过。当前已经
+在板上验证可用的有：`resize`、`split`、`subtract`、`threshold`、`bitwise_and`、
+`countNonZero`、`line`、`circle`、`putText`、`inRange`、`morphologyEx`、
+`findContours`、`contourArea`、`boundingRect`、`moments`、`drawContours`、
+`rectangle`、`getStructuringElement`。
+
 ### 直接运行
 
 ```python
