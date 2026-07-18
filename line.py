@@ -45,6 +45,7 @@ from config import (
     LINE_DRAW_DATA_ORIGIN,
     LINE_DRAW_DATA_OVERLAY,
     LINE_DRAW_FONT_SCALE,
+    LINE_DRAW_JUNCTION_COLOR,
     LINE_DRAW_LOST_COLOR,
     LINE_DRAW_PATH_COLOR,
     LINE_DRAW_POINT_RADIUS,
@@ -151,6 +152,7 @@ class LineTrackDetector:
         draw_center_color=LINE_DRAW_CENTER_COLOR,
         draw_lost_color=LINE_DRAW_LOST_COLOR,
         draw_path_color=LINE_DRAW_PATH_COLOR,
+        draw_junction_color=LINE_DRAW_JUNCTION_COLOR,
         draw_axis_color=LINE_DRAW_AXIS_COLOR,
         draw_text_color=LINE_DRAW_TEXT_COLOR,
         draw_thickness=LINE_DRAW_THICKNESS,
@@ -193,6 +195,7 @@ class LineTrackDetector:
         self.draw_center_color = tuple(draw_center_color)
         self.draw_lost_color = tuple(draw_lost_color)
         self.draw_path_color = tuple(draw_path_color)
+        self.draw_junction_color = tuple(draw_junction_color)
         self.draw_axis_color = tuple(draw_axis_color)
         self.draw_text_color = tuple(draw_text_color)
         self.draw_thickness = int(draw_thickness)
@@ -612,9 +615,47 @@ class LineTrackDetector:
                 1,
             )
 
+        self._draw_junction(frame, result, image_width)
+
         if self.draw_data:
             self._draw_data_block(frame, result)
         return result
+
+    def _draw_junction(self, frame, result, image_width):
+        """把判为路口的那条带和它的红色横向范围标出来。
+
+        属于几何层，不受 draw_data 控制：路口是本模块的主要输出之一，
+        上车后仍然需要一眼确认它标在哪里。
+        """
+        index = result["junction_band"]
+        if not result["junction"] or index < 0:
+            return
+        band = result["bands"][index]
+        if band["edge_first"] < 0:
+            return
+        scale_x = image_width / float(self.detect_width)
+        left = int(round(band["edge_first"] * scale_x))
+        right = int(round(band["edge_last"] * scale_x))
+        y = band["center_y"]
+        # 横线在这条带里的实际横向范围，端点各画一小段竖线便于看清。
+        cv2.line(
+            frame, (left, y), (right, y),
+            self.draw_junction_color, self.draw_thickness,
+        )
+        for x in (left, right):
+            cv2.line(
+                frame, (x, y - 10), (x, y + 10),
+                self.draw_junction_color, self.draw_thickness,
+            )
+        cv2.putText(
+            frame,
+            "JUNCTION b{}".format(index),
+            (max(0, min(left, image_width - 150)), max(14, y - 14)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            self.draw_font_scale,
+            self.draw_junction_color,
+            self.draw_thickness,
+        )
 
     def _draw_data_block(self, frame, result):
         """在画面左上角列出本帧的全部关键数据。"""
