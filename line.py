@@ -34,11 +34,16 @@ from config import (
     LINE_BAND_HEIGHT,
     LINE_CONTINUITY_REF_RATIO,
     LINE_DEMO_GC_INTERVAL,
+    LINE_DEMO_PRINT_INTERVAL,
     LINE_DETECT_WIDTH,
     LINE_EDGE_MIN_COLUMN_COUNT,
     LINE_DRAW_AXIS_COLOR,
     LINE_DRAW_BAND_COLOR,
+    LINE_DRAW_BAND_LABELS,
     LINE_DRAW_CENTER_COLOR,
+    LINE_DRAW_DATA_LINE_HEIGHT,
+    LINE_DRAW_DATA_ORIGIN,
+    LINE_DRAW_DATA_OVERLAY,
     LINE_DRAW_FONT_SCALE,
     LINE_DRAW_LOST_COLOR,
     LINE_DRAW_PATH_COLOR,
@@ -67,6 +72,46 @@ JUNCTION_FLAG_PRESENT = 0x01
 JUNCTION_FLAG_LEFT = 0x02
 JUNCTION_FLAG_RIGHT = 0x04
 JUNCTION_FLAG_LOST = 0x08
+
+
+def describe_junction_flags(flags):
+    """把 junction_flags 展开成可读文本，用于画面和终端。"""
+    flags = int(flags)
+    if not flags:
+        return "-"
+    names = []
+    if flags & JUNCTION_FLAG_PRESENT:
+        names.append("JUNC")
+    if flags & JUNCTION_FLAG_LEFT:
+        names.append("L")
+    if flags & JUNCTION_FLAG_RIGHT:
+        names.append("R")
+    if flags & JUNCTION_FLAG_LOST:
+        names.append("LOST")
+    return " ".join(names)
+
+
+def format_result(result):
+    """把一帧结果压成一行文本，画面和终端共用同一份格式。"""
+    if result is None:
+        return "LOST  valid=0"
+    offsets = []
+    for index, offset in enumerate(result["offsets"]):
+        if result["band_valid"][index]:
+            offsets.append("{:+d}".format(offset))
+        else:
+            offsets.append("--")
+    return (
+        "b[{}]  mass {:.2f}@b{}  conf {:.2f}  bands {}/{}  {}".format(
+            " ".join(offsets),
+            result["mass_ratio"],
+            result["junction_band"],
+            result["confidence"],
+            result["valid_band_count"],
+            len(result["bands"]),
+            describe_junction_flags(result["junction_flags"]),
+        )
+    )
 
 
 def _median(values):
@@ -111,6 +156,8 @@ class LineTrackDetector:
         draw_thickness=LINE_DRAW_THICKNESS,
         draw_point_radius=LINE_DRAW_POINT_RADIUS,
         draw_font_scale=LINE_DRAW_FONT_SCALE,
+        draw_data=LINE_DRAW_DATA_OVERLAY,
+        draw_band_labels=LINE_DRAW_BAND_LABELS,
     ):
         if not 0.0 <= roi_top_ratio < roi_bottom_ratio <= 1.0:
             raise ValueError("必须满足 0 <= roi_top < roi_bottom <= 1")
@@ -151,6 +198,8 @@ class LineTrackDetector:
         self.draw_thickness = int(draw_thickness)
         self.draw_point_radius = int(draw_point_radius)
         self.draw_font_scale = float(draw_font_scale)
+        self.draw_data = bool(draw_data)
+        self.draw_band_labels = bool(draw_band_labels)
 
         # CanMV 的精简版 OpenCV 没有 cv2.reduce，列投影只能用数组求和。
         # 不同固件的 numpy/ulab 对 axis 参数支持不一致，这里探测一次，
@@ -544,25 +593,78 @@ class LineTrackDetector:
                     )
                 previous = point
 
-        lines = (
-            "b {} {} {} {} {}".format(*result["offsets"]),
-            "mass {:.2f}  flags {:02X}  conf {:.2f}".format(
+            if not self.draw_band_labels:
+                continue
+            # 每条带的偏差直接标在该带的点旁边，一眼看出哪条带偏多少。
+            # 贴近右边界时改标到点的左侧，避免文字被画面截断。
+            label = "b{} {:+d}".format(band["index"], band["offset"]) \
+                if band["valid"] else "b{} --".format(band["index"])
+            label_x = point[0] + self.draw_point_radius + 4
+            if label_x > image_width - 70:
+                label_x = point[0] - self.draw_point_radius - 66
+            cv2.putText(
+                frame,
+                label,
+                (max(0, label_x), min(image_height - 3, point[1] + 4)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                self.draw_font_scale * 0.8,
+                color,
+                1,
+            )
+
+        if self.draw_data:
+            self._draw_data_block(frame, result)
+        return result
+
+    def _draw_data_block(self, frame, result):
+        """在画面左上角列出本帧的全部关键数据。"""
+        offsets = []
+        for index, offset in enumerate(result["offsets"]):
+            if result["band_valid"][index]:
+                offsets.append("{:+5d}".format(offset))
+            else:
+                offsets.append("   --")
+        lines = [
+            "b0..b4 {}".format(" ".join(offsets)),
+            "mass {:.2f} @b{}   conf {:.2f}   bands {}/{}".format(
                 result["mass_ratio"],
-                result["junction_flags"],
+                result["junction_band"],
                 result["confidence"],
+                result["valid_band_count"],
+                len(result["bands"]),
             ),
-        )
-        for offset, text in enumerate(lines):
+            "flags {:02X}  {}".format(
+                result["junction_flags"],
+                describe_junction_flags(result["junction_flags"]),
+            ),
+        ]
+        origin_x, origin_y = LINE_DRAW_DATA_ORIGIN
+        for index, text in enumerate(lines):
             cv2.putText(
                 frame,
                 text,
-                (5, 50 + offset * 22),
+                (origin_x, origin_y + index * LINE_DRAW_DATA_LINE_HEIGHT),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 self.draw_font_scale,
                 self.draw_text_color,
                 self.draw_thickness,
             )
-        return result
+
+    def draw_lost(self, frame):
+        """本帧没有检测结果时的提示。detect() 返回 None 时由调用方使用。"""
+        if not self.draw_data:
+            return None
+        origin_x, origin_y = LINE_DRAW_DATA_ORIGIN
+        cv2.putText(
+            frame,
+            "LINE LOST  valid=0",
+            (origin_x, origin_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            self.draw_font_scale,
+            self.draw_lost_color,
+            self.draw_thickness,
+        )
+        return None
 
     def process(self, frame, draw=True):
         """检测一帧并按需绘制，返回结果字典或 None。"""
@@ -596,12 +698,21 @@ class JunctionConfirmState:
         self.streak = 0
 
 
-def run_line_demo(display_target=None, enable_uart=False):
+def run_line_demo(
+    display_target=None,
+    enable_uart=False,
+    draw_data=True,
+    print_interval=LINE_DEMO_PRINT_INTERVAL,
+):
     """使用 CameraIO 运行红线巡线演示，并按需发送 LINE 帧。
 
     enable_uart 默认关闭。开启后会阻塞等待与单片机握手，且该等待没有
     超时；单独调视觉时若单片机没接或没在跑，程序会停在握手上不出画面。
     需要发送 LINE 帧时显式传入 True。
+
+    draw_data 控制画面上的数据叠加层和每条带的偏差标注。调试时留 True
+    看数值，实际上车传 False 关掉，省下每帧十几次 putText。
+    print_interval 是终端打印同一份数据的帧间隔，传 0 关闭。
     """
     import gc
     import sys
@@ -613,7 +724,10 @@ def run_line_demo(display_target=None, enable_uart=False):
         display_target = DISPLAY_TARGET_IDE
     camera = None
     tracking_uart = None
-    detector = LineTrackDetector()
+    detector = LineTrackDetector(
+        draw_data=draw_data,
+        draw_band_labels=draw_data,
+    )
     junction_state = JunctionConfirmState()
     frame_count = 0
 
@@ -632,6 +746,7 @@ def run_line_demo(display_target=None, enable_uart=False):
         ))
         print("显示目标：{}".format(display_target))
         print("串口发送：{}".format("开" if enable_uart else "关"))
+        print("数据叠加：{}".format("开" if draw_data else "关"))
         print("================================")
 
         if enable_uart:
@@ -651,9 +766,14 @@ def run_line_demo(display_target=None, enable_uart=False):
             image = camera.snapshot()
             frame = image.to_numpy_ref()
             result = detector.process(frame)
+            if result is None:
+                detector.draw_lost(frame)
 
             if tracking_uart is not None:
                 tracking_uart.send_line(result)
+
+            if print_interval and frame_count % print_interval == 0:
+                print(format_result(result))
 
             if junction_state.update(result):
                 # TODO: 切换到 num.py 的 DigitDetector 识别病房号，
@@ -661,8 +781,12 @@ def run_line_demo(display_target=None, enable_uart=False):
                 # junction_state.reset() 回到巡线。
                 cv2.putText(
                     frame,
-                    "JUNCTION",
-                    (5, 96),
+                    "JUNCTION CONFIRMED",
+                    (
+                        LINE_DRAW_DATA_ORIGIN[0],
+                        LINE_DRAW_DATA_ORIGIN[1] +
+                        3 * LINE_DRAW_DATA_LINE_HEIGHT + 6,
+                    ),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.65,
                     LINE_DRAW_TEXT_COLOR,
