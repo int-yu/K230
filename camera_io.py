@@ -42,6 +42,9 @@ from config import (
     IDE_DISPLAY_Y,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
+    WIFI_RTSP_CONNECT_TIMEOUT_S,
+    WIFI_RTSP_ENABLED,
+    WIFI_RTSP_REQUIRED,
 )
 
 
@@ -52,10 +55,25 @@ DISPLAY_TARGET_IDE = "ide"
 class CameraIO:
     """统一管理摄像头采集、显示输出和媒体资源。"""
 
-    def __init__(self, display_target=DISPLAY_TARGET_BOARD):
+    def __init__(
+        self,
+        display_target=DISPLAY_TARGET_BOARD,
+        enable_rtsp=None,
+        rtsp_required=None,
+        rtsp_service_factory=None,
+    ):
         self.display_target = display_target
         self._configure_display(display_target)
-
+        self.enable_rtsp = (
+            WIFI_RTSP_ENABLED if enable_rtsp is None else bool(enable_rtsp)
+        )
+        self.rtsp_required = (
+            WIFI_RTSP_REQUIRED if rtsp_required is None
+            else bool(rtsp_required)
+        )
+        self._rtsp_service_factory = rtsp_service_factory
+        self._rtsp_service = None
+        self._rtsp_error = None
         self.sensor = None
         self._running = False
         self._resources_active = False
@@ -91,6 +109,7 @@ class CameraIO:
             MediaManager.init()
             self.sensor.run()
             self._running = True
+            self._initialize_rtsp()
 
         except Exception:
             self.deinitialize()
@@ -121,11 +140,77 @@ class CameraIO:
                 y=self.display_y,
             )
 
+    @property
+    def rtsp_active(self):
+        return bool(
+            self._rtsp_service is not None and
+            self._rtsp_service.active
+        )
+
+    @property
+    def rtsp_url(self):
+        if self._rtsp_service is None:
+            return None
+        return self._rtsp_service.rtsp_url
+
+    @property
+    def rtsp_error(self):
+        if self._rtsp_service is not None:
+            service_error = getattr(self._rtsp_service, "last_error", None)
+            if service_error:
+                return service_error
+        return self._rtsp_error
+
+    def _initialize_rtsp(self):
+        if not self.enable_rtsp:
+            return
+        try:
+            if self._rtsp_service_factory is None:
+                from wifi_rtsp import create_default_wifi_rtsp_service
+                service = create_default_wifi_rtsp_service(
+                    WIFI_RTSP_CONNECT_TIMEOUT_S
+                )
+            else:
+                service = self._rtsp_service_factory()
+            self._rtsp_service = service
+            service.initialize(self.display_width, self.display_height)
+            self._rtsp_error = None
+            print("Wi-Fi RTSP started: {}".format(service.rtsp_url))
+        except Exception as error:
+            if self._rtsp_service is not None:
+                try:
+                    self._rtsp_service.deinitialize()
+                except Exception:
+                    pass
+            service_error = None
+            if self._rtsp_service is not None:
+                service_error = getattr(
+                    self._rtsp_service, "last_error", None
+                )
+            self._rtsp_error = service_error or str(error)
+            self._rtsp_service = None
+            if self.rtsp_required:
+                raise
+            print("Wi-Fi RTSP unavailable; continuing: {}".format(
+                self._rtsp_error
+            ))
+
     def deinitialize(self):
         """按安全顺序释放摄像头、显示和媒体资源。"""
 
-        if not self._resources_active and self.sensor is None:
+        if (
+            not self._resources_active and
+            self.sensor is None and
+            self._rtsp_service is None
+        ):
             return
+
+        if self._rtsp_service is not None:
+            try:
+                self._rtsp_service.deinitialize()
+            except Exception:
+                pass
+            self._rtsp_service = None
 
         if self.sensor is not None:
             try:
