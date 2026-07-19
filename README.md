@@ -130,7 +130,7 @@ WIFI_RTSP_REQUIRED = False
 现有检测程序不需要改主循环。任一程序创建并初始化 `CameraIO` 后会自动尝试连接热点；成功时终端打印类似：
 
 ```text
-Wi-Fi RTSP 已启动: rtsp://192.168.137.25:8554/test
+Wi-Fi RTSP started: rtsp://192.168.137.25:8554/test
 ```
 
 电脑连接同一热点后，在 VLC 的“打开网络串流”或 ffplay 中打开该地址：
@@ -141,7 +141,7 @@ ffplay -fflags nobuffer -flags low_delay rtsp://192.168.137.25:8554/test
 
 ### 失败降级
 
-默认 `WIFI_RTSP_REQUIRED = False`。缺少 `wifi_secrets.py`、固件没有 WLAN/WBC、密码错误、连接超时、DHCP 失败或 RTSP 启动失败时，终端会打印 `Wi-Fi RTSP 未启用，原功能继续`；摄像头、检测、串口、拍照和 IDE Preview 继续运行。
+默认 `WIFI_RTSP_REQUIRED = False`。缺少 `wifi_secrets.py`、固件没有 WLAN/WBC、密码错误、连接超时、DHCP 失败或 RTSP 启动失败时，终端会打印以 `Wi-Fi RTSP unavailable; continuing:` 开头的消息；摄像头、检测、串口、拍照和 IDE Preview 继续运行。
 
 只有专用程序明确要求“没有 RTSP 就不能运行”时才设为：
 
