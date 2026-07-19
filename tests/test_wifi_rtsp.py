@@ -58,8 +58,9 @@ class FakeRtspServer:
 
 
 class FakeWBC:
-    def __init__(self, fail_start=False):
+    def __init__(self, fail_start=False, fail_stop=False):
         self.fail_start = fail_start
+        self.fail_stop = fail_stop
         self.configure_calls = []
         self.start_calls = 0
         self.stop_calls = 0
@@ -75,6 +76,8 @@ class FakeWBC:
 
     def stop(self):
         self.stop_calls += 1
+        if self.fail_stop:
+            raise RuntimeError("stop failed")
 
 
 def test_import_does_not_load_board_network_or_wbc(monkeypatch):
@@ -127,6 +130,25 @@ def test_initialize_connects_and_starts_wbc_then_cleans_once():
     assert service.rtsp_url is None
 
 
+def test_wbc_stop_failure_still_disconnects_and_disables_wlan():
+    wifi_rtsp = importlib.import_module("wifi_rtsp")
+    wlan = FakeWLAN()
+    wbc = FakeWBC(fail_stop=True)
+    service = wifi_rtsp.WifiRtspService(
+        "phone-hotspot", "12345678",
+        wlan_factory=lambda: wlan, wbc=wbc, time_module=FakeClock(),
+    )
+    service.initialize(640, 480)
+
+    service.deinitialize()
+
+    assert wbc.stop_calls == 1
+    assert wlan.disconnect_calls == 1
+    assert wlan.active_calls == [True, False]
+    assert service.active is False
+    assert service.rtsp_url is None
+
+
 def test_connection_timeout_never_starts_wbc():
     wifi_rtsp = importlib.import_module("wifi_rtsp")
     wlan = FakeWLAN(connect_after_checks=999)
@@ -137,6 +159,7 @@ def test_connection_timeout_never_starts_wbc():
     )
     with pytest.raises(RuntimeError, match="连接热点超时"):
         service.initialize(640, 480)
+    assert "连接热点超时" in service.last_error
     assert service.active is False
     assert wbc.start_calls == 0
     assert wbc.stop_calls == 0

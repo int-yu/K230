@@ -144,6 +144,7 @@ def test_successful_rtsp_starts_after_media_and_stops_before_sensor(monkeypatch)
     assert camera.rtsp_active is True
     assert camera.rtsp_url == "rtsp://192.168.137.25:8554/test"
     assert events.index("media_init") < events.index(("rtsp_start", 640, 480))
+    assert events.index("sensor_run") < events.index(("rtsp_start", 640, 480))
     camera.deinitialize()
     assert events.index("rtsp_stop") < events.index("sensor_stop")
     assert events.index("rtsp_stop") < events.index("display_deinit")
