@@ -8,6 +8,7 @@
 | --- | --- |
 | `config.py` | 摄像头、显示、串口和各检测器的默认参数 |
 | `camera_io.py` | `Sensor`、`Display`、`MediaManager` 生命周期 |
+| `wifi_rtsp.py` | 可选 Wi-Fi STA 与 WBC H.264 RTSP 服务；默认关闭，失败不影响原视觉流程 |
 | `uart_io.py` | FPIOA、UART 生命周期、二进制数据帧、双向握手和目标偏差协议；可直接运行固定信号测试 |
 | `bluetooth_uart.py` | UART2 蓝牙单字符指令接收与缓存，导出 `BluetoothUART` |
 | `color.py` | 彩色光点检测，导出 `ColorSpotDetector` |
@@ -92,6 +93,84 @@ finally:
 ```
 
 板载屏幕和 IDE 的分辨率、位置、帧率、质量参数分别由 `config.py` 中的 `BOARD_DISPLAY_...` 和 `IDE_DISPLAY_...` 管理。它们是所有摄像头程序共享的显示配置，不再与 `tangle.py` 或 `num.py` 绑定。当前摄像头同时启用水平镜像和垂直翻转，等效于旋转 180°。
+
+## Wi-Fi RTSP 标注画面推流
+
+`wifi_rtsp.py` 使用 CanMV 固件内置的 `network.WLAN`、`libs.WBCRtsp` 和 K230 硬件 H.264 VENC，把 `CameraIO.show_image()` 的最终显示画面推到局域网。检测框、文字、状态和 FPS 已经画在 Display 上，因此会同时出现在 VS Code Preview 和 RTSP 画面中。K230 不需要安装 openRTSP 或 LIVE555；它们只可作为电脑端客户端。
+
+官方 `WBCRtsp` 当前固定使用：
+
+- H.264、无音频、约 2048 kbps。
+- 端口 `8554`、会话名 `test`。
+- 当前 Display 的实际宽高；IDE 模式下本项目为 `640x480`。
+
+### 配置热点
+
+复制示例文件：
+
+```text
+wifi_secrets.example.py -> wifi_secrets.py
+```
+
+填写 2.4 GHz 热点：
+
+```python
+WIFI_SSID = "your-2.4g-hotspot"
+WIFI_PASSWORD = "your-hotspot-password"
+```
+
+`wifi_secrets.py` 已加入 `.gitignore`，不要提交真实密码。把它和 `wifi_rtsp.py`、`camera_io.py`、`config.py` 一起上传到 `/sdcard/K230`。
+在 `config.py` 中开启：
+
+```python
+WIFI_RTSP_ENABLED = True
+WIFI_RTSP_REQUIRED = False
+```
+
+现有检测程序不需要改主循环。任一程序创建并初始化 `CameraIO` 后会自动尝试连接热点；成功时终端打印类似：
+
+```text
+Wi-Fi RTSP 已启动: rtsp://192.168.137.25:8554/test
+```
+
+电脑连接同一热点后，在 VLC 的“打开网络串流”或 ffplay 中打开该地址：
+
+```powershell
+ffplay -fflags nobuffer -flags low_delay rtsp://192.168.137.25:8554/test
+```
+
+### 失败降级
+
+默认 `WIFI_RTSP_REQUIRED = False`。缺少 `wifi_secrets.py`、固件没有 WLAN/WBC、密码错误、连接超时、DHCP 失败或 RTSP 启动失败时，终端会打印 `Wi-Fi RTSP 未启用，原功能继续`；摄像头、检测、串口、拍照和 IDE Preview 继续运行。
+
+只有专用程序明确要求“没有 RTSP 就不能运行”时才设为：
+
+```python
+WIFI_RTSP_REQUIRED = True
+```
+
+### 固件能力检查
+
+如果终端报告缺少模块，可在板端 REPL 检查：
+
+```python
+import network
+import multimedia
+from libs.WBCRtsp import WBCRtsp
+print("WLAN/RTSP/WBC available")
+```
+
+缺少任一模块时需要升级到包含无线网络与 `WBCRtsp` 的 CanMV K230 固件，或者把与该固件版本匹配的官方 `WBCRtsp.py` 上传到 `/sdcard/libs`。不要混用不同固件版本的媒体库。
+
+### 帧率与温升验证
+
+RTSP 使用硬件 H.264 编码，但 WBC、内存搬运和 Wi-Fi 仍会增加负载。部署前对同一个算法分别连续运行至少 10 分钟：
+
+1. `WIFI_RTSP_ENABLED = False`，记录平均 FPS 和温度。
+2. `WIFI_RTSP_ENABLED = True`，连接电脑播放器后记录平均 FPS 和温度。
+3. 目标是平均 FPS 降幅不超过约 10%；该值是本项目验收目标，不是芯片保证。
+
+VS Code Preview 走 USB IDE 帧缓冲，RTSP 走 Wi-Fi，两者同时开启属于双路输出。性能优先时可以关闭 VS Code Preview 窗口，或让程序选择板载屏幕显示目标，但本模块不会自动关闭 IDE Preview，以保证 RTSP 失败后原调试画面仍然存在。
 
 ## 彩色光点模块
 
@@ -1019,6 +1098,13 @@ class MyTargetDetector:
 10. 有显示输出的可运行主程序应在主循环外创建 `time.clock()`，每帧调用 `tick()`，并在 `show_image()` 前把当前 `FPS` 绘制到画面上；检测器模块本身不负责统计主循环帧率。
 
 ## 上传到 K230
+
+Wi-Fi RTSP 标注画面推流还需要：
+
+- `wifi_rtsp.py`
+- `wifi_secrets.py`（由示例复制并填写，不提交 Git）
+- `camera_io.py`
+- `config.py`
 
 彩色光点功能至少需要：
 
