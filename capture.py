@@ -115,19 +115,31 @@ class CaptureService:
         return added
 
     def save(self, image):
-        """保存一张，返回本张编号；失败返回 None。"""
+        """保存一张，返回本张编号；失败返回 None。
+
+        实测该固件的 image.save() 不支持 rgb888 格式（报
+        'current format not support save function!'），因此改用
+        compressed() 取 JPEG 字节后自行写文件。
+        """
         index = self._next_index
         path = self._build_path(index)
 
         try:
             try:
-                image.save(path, quality=self.quality)
+                data = image.compressed(quality=self.quality)
             except TypeError:
-                # 部分固件的 save() 不接受 quality 关键字。
-                image.save(path)
+                # 部分固件的 compressed() 不接受 quality 关键字。
+                data = image.compressed()
+            with open(path, "wb") as handle:
+                handle.write(data)
         except Exception:
-            # TF 卡未挂载、已写满或路径不可写。不推进编号，
-            # 让下一张重用同一个编号，避免在卡上留下空洞。
+            # TF 卡未挂载、已写满或路径不可写。删掉可能残留的半截
+            # 文件，否则它会占用编号并在卡上留下打不开的坏图。
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+            # 不推进编号，让下一张重用同一个编号。
             return None
 
         self._next_index = index + 1

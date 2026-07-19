@@ -656,6 +656,23 @@ digit_detector = DigitDetector(template_dir="_digit_templates")
 
 `capture.py` 导出 `CaptureService`，收到 MSPM0 发来的 CAPTURE 帧（`TYPE=0x20`）后，在主循环的下一帧把当前画面保存到 TF 卡，然后回一个 `CAPTURE_ACK` 帧（`TYPE=0x21`）。照片不通过串口回传，事后拔卡拷贝。
 
+### 固件限制与存图实现（上板实测结论，勿改）
+
+在真实 K230 板子上以 rgb888（640x480）格式实测，`image.save()` 的两种调用方式均失败：
+
+```
+image.save(path, quality=95)  -> OSError: current format not support save function!
+image.save(path)              -> OSError: current format not support save function!
+```
+
+**该固件的 `image.save()` 不支持 rgb888 格式**，无论是否传 quality 参数，结果一致。唯一可用路径是 `image.compressed(quality=...)` 返回 JPEG 字节后自行写文件，实测返回正常 JPEG 数据（54969 字节）。
+
+因此 `save()` 的实现为：先调 `image.compressed(quality=...)` 取字节，再用 `open(path, "wb")` 写文件。部分固件的 `compressed()` 不接受 quality 关键字时退回无参调用。
+
+**失败时的行为**：若 `compressed()` 抛异常或写文件失败，会尝试 `os.remove(path)` 删除可能残留的半截文件（`open()` 成功但 `write()` 中途失败时会产生半截文件，不删则下次扫描会把它计入编号，留下打不开的坏图），然后返回 `None`，并且不推进 `_next_index`，让下一次尝试重用同一个编号。
+
+**不要把实现改回 `image.save()`**——该固件对 rgb888 图像调用 `image.save()` 必然报 `current format not support save function!`，这是上板实测得出的结论，不是推测。
+
 ### 公共方法
 
 | 方法 | 说明 |
