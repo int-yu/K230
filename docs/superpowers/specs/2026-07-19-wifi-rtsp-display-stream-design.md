@@ -49,10 +49,10 @@ Sensor -> RGB 检测 -> 绘制批注 -> Display/IDE 帧缓冲
 - `WIFI_RTSP_ENABLED = False`：保持所有现有程序默认行为不变。
 - `WIFI_RTSP_REQUIRED = False`：网络推流失败时继续运行本地功能。
 - `WIFI_RTSP_CONNECT_TIMEOUT_S = 15`：热点连接最长等待时间。
-- `WIFI_RTSP_PORT = 8554`：RTSP 服务端口。
-- `WIFI_RTSP_SESSION = "test"`：RTSP 会话名。
-- `WIFI_RTSP_WIDTH = IMAGE_WIDTH`、`WIFI_RTSP_HEIGHT = IMAGE_HEIGHT`：保持 `640x480`。
-- `WIFI_RTSP_KEEP_IDE_PREVIEW = True`：调试时保留 VS Code Preview；性能优先时可关闭 USB Preview。
+
+当前官方 `WBCRtsp` 固定使用 H.264、约 2048 kbps、端口 `8554`、会话名
+`test`，并从 `Display.width()`、`Display.height()` 读取实际编码尺寸。第一版不伪造
+不可用的端口、会话、码率或尺寸配置项。
 
 真实 `WIFI_SSID` 和 `WIFI_PASSWORD` 放在 `wifi_secrets.py`。仓库只提供 `wifi_secrets.example.py`，用户复制并填写后上传到 `/sdcard/K230`。
 
@@ -62,11 +62,11 @@ Sensor -> RGB 检测 -> 绘制批注 -> Display/IDE 帧缓冲
 
 公共行为：
 
-- `initialize(width, height)`：连接热点、取得 DHCP 地址、配置并启动 WBC RTSP，成功后返回自身。
+- `initialize(width, height)`：连接热点、取得 DHCP 地址、配置并启动 WBC RTSP，成功后返回自身。`width`、`height` 用于调用官方接口和诊断，实际编码尺寸由官方实现读取当前 Display。
 - `deinitialize()`：停止 WBC RTSP、断开 WLAN；可重复调用，不抛出清理异常。
 - `active`：只有 WLAN 和 RTSP 都启动成功时为 `True`。
 - `ip_address`：成功后保存 K230 的局域网地址。
-- `rtsp_url`：成功后为 `rtsp://<ip>:<port>/<session>`，未启动时为 `None`。
+- `rtsp_url`：优先读取官方 RTSP 服务器返回的 URL；无法读取时回退为 `rtsp://<ip>:8554/test`，未启动时为 `None`。
 - `last_error`：失败时保存简短错误，便于终端诊断。
 
 构造函数允许注入 WLAN、WBC 和时间实现，桌面测试不依赖 K230 硬件。默认路径使用板端真实模块。
@@ -80,13 +80,21 @@ Sensor -> RGB 检测 -> 绘制批注 -> Display/IDE 帧缓冲
 - 推流启动失败且 `WIFI_RTSP_REQUIRED=True`：按当前 `CameraIO` 初始化异常路径释放全部资源并重新抛出，供需要强制联网的专用程序使用。
 - `CameraIO.deinitialize()` 先停止 RTSP，再停止 Sensor、Display 和 MediaManager，避免 WBC 读取已经释放的显示缓冲。
 
+官方 `WBCRtsp.stop()` 会等待推流线程结束。若启动线程前已经失败，直接调用它可能
+无限等待，因此服务必须单独保存 `_wbc_started`；只有 `WBCRtsp.start()` 完整成功后
+才允许调用官方 `stop()`。未启动成功时只断开 WLAN 和清理本服务状态。
+
 由于 WBC 捕获的是 `show_image()` 的最终显示结果，检测器无需感知 RTSP，所有已经画到帧上的批注自然进入网络流。
 
 ## VS Code Preview
 
-CanMV 扩展的 Preview 使用 USB IDE 帧缓冲，不使用 RTSP。`WIFI_RTSP_KEEP_IDE_PREVIEW=True` 时继续保留当前 `Display.VIRT(..., to_ide=True)` 行为，并同时提供 RTSP URL。
+CanMV 扩展的 Preview 使用 USB IDE 帧缓冲，不使用 RTSP。第一版不改变现有
+`Display.VIRT(..., to_ide=True)` 行为，同时提供 RTSP URL，保证失败降级后 IDE
+Preview 仍然存在。
 
-双路输出会增加内存与传输负载。性能优先部署时将 `WIFI_RTSP_KEEP_IDE_PREVIEW=False`，不再通过 USB 发送 IDE Preview，但 RTSP 仍包含同一套最终批注。
+双路输出会增加内存与传输负载。性能优先部署时可让现有程序选择板载屏幕显示目标，
+或停止 VS Code Preview 消费端；第一版不在 RTSP 初始化前关闭 IDE 帧缓冲，因为如果
+RTSP 随后失败，将无法满足“原预览继续工作”的 fail-open 要求。
 
 ## 故障隔离
 
@@ -106,7 +114,7 @@ CanMV 扩展的 Preview 使用 USB IDE 帧缓冲，不使用 RTSP。`WIFI_RTSP_K
 - 使用硬件 H.264 VENC，不使用 Python JPEG 循环。
 - 不启用音频。
 - 默认关闭；只有用户明确启用才占用资源。
-- 保留双路调试与仅 RTSP 的性能模式。
+- 第一版始终保留现有显示配置，优先保证故障后原功能不变；性能模式不通过自动关闭 IDE 帧缓冲实现。
 - README 要求在同一算法上分别记录关闭和开启 RTSP 的平均 FPS；目标是平均 FPS 降幅不超过约 10%，该数值是验收目标而非芯片保证。
 - 板端温升必须通过实际硬件持续运行观察；桌面测试不宣称温度结果。
 
@@ -117,9 +125,10 @@ CanMV 扩展的 Preview 使用 USB IDE 帧缓冲，不使用 RTSP。`WIFI_RTSP_K
 1. 模块导入不触发硬件初始化。
 2. WLAN 成功连接后生成正确 IP 和 RTSP URL。
 3. 热点连接超时不启动 WBC，并保存错误状态。
-4. WBC 启动失败时断开 WLAN并回到非活动状态。
-5. `deinitialize()` 可重复调用，单个清理异常不阻止后续清理。
-6. fail-open 模式下 `CameraIO` 的原有初始化和显示路径保持可用。
+4. WBC 启动失败时不调用可能等待线程的官方 `stop()`，断开 WLAN 并回到非活动状态。
+5. WBC 成功启动后，`deinitialize()` 才调用官方 `stop()`。
+6. `deinitialize()` 可重复调用，单个清理异常不阻止后续清理。
+7. fail-open 模式下 `CameraIO` 的原有初始化和显示路径保持可用。
 
 板端验收：
 
