@@ -21,6 +21,7 @@ from config import (
     CAPTURE_MESSAGE_ACK,
     CAPTURE_MESSAGE_REQUEST,
     CAPTURE_SAVE_DIR,
+    CAPTURE_WARMUP_FRAMES,
 )
 
 
@@ -162,7 +163,7 @@ class CaptureService:
         return (1, index)
 
 
-def run_capture_demo(display_target=None, enable_uart=True):
+def run_capture_demo(display_target=None, enable_uart=True, warmup_frames=None):
     """独立拍照主程序：等 MSPM0 的 CAPTURE 帧，存图并回 ACK。"""
     import time
 
@@ -171,12 +172,20 @@ def run_capture_demo(display_target=None, enable_uart=True):
 
     if display_target is None:
         display_target = DISPLAY_TARGET_IDE
+    if warmup_frames is None:
+        warmup_frames = CAPTURE_WARMUP_FRAMES
 
     service = CaptureService()
     camera = CameraIO(display_target=display_target).initialize()
     tracking_uart = None
 
     try:
+        # sensor 刚启动时自动曝光尚未收敛,前若干帧是全黑的。
+        # 实测初始化后立刻 snapshot() 存出来就是黑图,因此先空跑一段。
+        # 不能省:K230 刚开机 MSPM0 就发 CAPTURE 时,存下的会是黑图。
+        for _ in range(warmup_frames):
+            camera.snapshot()
+
         if enable_uart:
             tracking_uart = TrackingUART().initialize()
             tracking_uart.wait_for_handshake()

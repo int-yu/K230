@@ -2,6 +2,8 @@
 
 import os
 import sys
+import types
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -144,3 +146,61 @@ def test_handle_frames_returns_actual_added_when_clamped(tmp_path):
     # 应返回实际新增量 2，而不是请求量 5
     assert added == 2
     assert service.pending == 20
+
+
+def test_warmup_snapshot_called_n_times(monkeypatch):
+    """run_capture_demo 应在进入主循环（及握手）前对摄像头空跑 warmup_frames 次 snapshot()。
+
+    使用假模块替代 camera_io / uart_io / time，不引入任何硬件依赖。
+    主循环第一帧抛 SystemExit 以终止无限循环；
+    断言 snapshot() 共被调用 warmup_frames + 1 次（预热 N 次 + 主循环首帧 1 次）。
+    """
+    from capture import run_capture_demo
+
+    WARMUP_N = 5
+    call_count = [0]
+
+    class FakeCamera:
+        def snapshot(self):
+            call_count[0] += 1
+            if call_count[0] > WARMUP_N:
+                raise SystemExit("done")
+            return object()
+
+        def show_image(self, img):
+            pass
+
+        def deinitialize(self):
+            pass
+
+    class FakeCameraIO:
+        def __init__(self, **kwargs):
+            pass
+
+        def initialize(self):
+            return FakeCamera()
+
+    cam_mod = types.ModuleType("camera_io")
+    cam_mod.CameraIO = FakeCameraIO
+    cam_mod.DISPLAY_TARGET_IDE = None
+    monkeypatch.setitem(sys.modules, "camera_io", cam_mod)
+
+    uart_mod = types.ModuleType("uart_io")
+    uart_mod.TrackingUART = MagicMock()
+    monkeypatch.setitem(sys.modules, "uart_io", uart_mod)
+
+    # time.clock() 是 MicroPython 专有 API，桌面 Python 3 无此方法，需要打桩。
+    fake_clock_inst = MagicMock()
+    fake_clock_inst.tick = MagicMock()
+    fake_clock_inst.fps = MagicMock(return_value=0.0)
+    fake_time_mod = types.ModuleType("time")
+    fake_time_mod.clock = lambda: fake_clock_inst
+    monkeypatch.setitem(sys.modules, "time", fake_time_mod)
+
+    try:
+        run_capture_demo(enable_uart=False, warmup_frames=WARMUP_N)
+    except SystemExit:
+        pass
+
+    # 前 WARMUP_N 次为预热；第 WARMUP_N + 1 次是主循环首帧触发 SystemExit。
+    assert call_count[0] == WARMUP_N + 1

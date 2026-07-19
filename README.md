@@ -715,6 +715,25 @@ while True:
     camera.show_image(image)
 ```
 
+### 冷启动预热（上板实测结论，勿省）
+
+sensor 初始化完成后，自动曝光算法尚未收敛，最初若干帧是全黑图像。实测初始化后立刻调用 `snapshot()` 保存，得到的是全黑文件；预热 30 帧后保存，颜色正常。
+
+`run_capture_demo()` 在握手之前先空跑 `CAPTURE_WARMUP_FRAMES` 帧：
+
+```python
+for _ in range(warmup_frames):
+    camera.snapshot()
+```
+
+**预热放在握手前**：握手是 K230 向 MSPM0 宣告"我已就绪"的信号。若握手在预热后发出，MSPM0 收到 READY_ACK 时 sensor 已经收敛，第一张 CAPTURE 请求不会拍到黑图。若颠倒顺序，MSPM0 可能在 sensor 尚未收敛时立即发出 CAPTURE，导致存下黑图。
+
+**不要删掉这段预热**——这是 K230 sensor 的固有行为，不是代码冗余。
+
+### `to_numpy_ref()` 通道顺序（上板实测结论，勿改）
+
+`image.to_numpy_ref()` 返回的 numpy 数组是 **RGB** 通道顺序，而 `cv2.imwrite` 期望 **BGR**。若直接将该数组传给 `cv2.imwrite`，存出来的图像红蓝互换。如需走 cv2 写图，必须先 `cvtColor(frame, cv2.COLOR_RGB2BGR)`。存图路径（`CaptureService.save()`）已改用 `image.compressed()` 绕过此问题，无需 `to_numpy_ref()`。
+
 ### `CAPTURE_` 参数表
 
 | 参数 | 默认值 | 含义 |
@@ -726,6 +745,7 @@ while True:
 | `CAPTURE_MAX_PENDING` | `20` | 单次最多累积的待拍张数上限 |
 | `CAPTURE_MESSAGE_REQUEST` | `0x20` | MSPM0 发来的拍照请求帧 TYPE |
 | `CAPTURE_MESSAGE_ACK` | `0x21` | K230 回复的拍照确认帧 TYPE |
+| `CAPTURE_WARMUP_FRAMES` | `30` | 初始化后空跑帧数，等待自动曝光收敛（实测前若干帧全黑） |
 
 ## 串口模块
 
