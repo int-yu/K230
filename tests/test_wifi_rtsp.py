@@ -135,7 +135,7 @@ def test_connection_timeout_never_starts_wbc():
         "phone-hotspot", "12345678", connect_timeout_s=0.2,
         wlan_factory=lambda: wlan, wbc=wbc, time_module=FakeClock(),
     )
-    with pytest.raises(RuntimeError, match="杩炴帴鐑偣瓒呮椂"):
+    with pytest.raises(RuntimeError, match="连接热点超时"):
         service.initialize(640, 480)
     assert service.active is False
     assert wbc.start_calls == 0

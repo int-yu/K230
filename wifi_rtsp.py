@@ -107,7 +107,7 @@ class WifiRtspService:
         while not self._wlan.isconnected():
             if self._ticks_diff(self._ticks_ms(), start_ms) >= timeout_ms:
                 raise RuntimeError(
-                    "杩炴帴鐑偣瓒呮椂 ({} seconds)".format(self.connect_timeout_s)
+                    "连接热点超时（{} 秒）".format(self.connect_timeout_s)
                 )
             self._sleep_ms(100)
 
