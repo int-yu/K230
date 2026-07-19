@@ -441,3 +441,10 @@ CAPTURE_JPEG_QUALITY = 95
 CAPTURE_MAX_PENDING = 20
 CAPTURE_MESSAGE_REQUEST = 0x20
 CAPTURE_MESSAGE_ACK = 0x21
+# ------------------------------------------------------------
+# Wi-Fi RTSP final display stream (wifi_rtsp.py)
+# ------------------------------------------------------------
+
+WIFI_RTSP_ENABLED = False
+WIFI_RTSP_REQUIRED = False
+WIFI_RTSP_CONNECT_TIMEOUT_S = 15
