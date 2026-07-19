@@ -4,7 +4,7 @@ import time
 
 
 class WifiRtspService:
-    """Connect a hotspot and serve the final display via official WBCRtsp."""
+    """Connect a hotspot and serve the final display via bounded WBC RTSP."""
 
     def __init__(self, ssid, password, connect_timeout_s=15,
                  wlan_factory=None, wbc=None, time_module=None):
@@ -22,13 +22,22 @@ class WifiRtspService:
         self._time = time_module or time
         self._wlan = None
         self._wbc_started = False
-        self.active = False
+        self._prepared = False
+        self._active = False
         self.ip_address = None
         self.rtsp_url = None
         self.last_error = None
 
     def initialize(self, width, height):
         if self.active:
+            return self
+        self.prepare()
+        return self.start_stream(width, height)
+
+    def prepare(self):
+        """Connect Wi-Fi and load the safe RTSP implementation before media init."""
+
+        if self._prepared:
             return self
         self.last_error = None
         try:
@@ -42,11 +51,52 @@ class WifiRtspService:
             ip_address = network_config[0]
             if not ip_address or ip_address == "0.0.0.0":
                 raise RuntimeError("connected but DHCP did not provide a valid IP")
+            self._get_wbc()
+            self.ip_address = str(ip_address)
+            self.rtsp_url = "rtsp://{}:8554/test".format(self.ip_address)
+            self._prepared = True
+            return self
+        except Exception as error:
+            message = "Wi-Fi RTSP startup failed: {}".format(error)
+            self.deinitialize()
+            self.last_error = message
+            raise RuntimeError(message)
+
+    @property
+    def active(self):
+        if not self._active:
+            return False
+        if self._wbc_started:
+            wbc_active = getattr(self._wbc, "active", None)
+            if wbc_active is False:
+                worker_error = getattr(self._wbc, "worker_error", None)
+                if worker_error:
+                    self.last_error = worker_error
+                return False
+        return True
+
+    @active.setter
+    def active(self, value):
+        self._active = bool(value)
+
+    @property
+    def worker_error(self):
+        if self._wbc is None:
+            return None
+        return getattr(self._wbc, "worker_error", None)
+
+    def start_stream(self, width, height):
+        """Start display writeback after Display and MediaManager are ready."""
+
+        if self.active:
+            return self
+        if not self._prepared:
+            raise RuntimeError("prepare Wi-Fi RTSP before starting the stream")
+        try:
             wbc = self._get_wbc()
             wbc.configure(int(width), int(height))
             wbc.start()
             self._wbc_started = True
-            self.ip_address = str(ip_address)
             self.rtsp_url = self._resolve_rtsp_url()
             self.active = True
             return self
@@ -57,13 +107,47 @@ class WifiRtspService:
             raise RuntimeError(message)
 
     def deinitialize(self):
+        """Stop safely; return False rather than destroying live media resources."""
+
         if self._wbc_started:
             try:
-                self._wbc.stop()
+                stopped = self._wbc.stop()
             except Exception as error:
-                if self.last_error is None:
-                    self.last_error = "WBC RTSP stop failed: {}".format(error)
+                self.last_error = "WBC RTSP stop failed: {}".format(error)
+                self.active = False
+                return False
+            if stopped is False:
+                self.last_error = getattr(
+                    self._wbc,
+                    "last_error",
+                    None,
+                ) or "WBC RTSP worker is still stopping"
+                self.active = False
+                return False
             self._wbc_started = False
+        self._disconnect_wlan()
+        self._prepared = False
+        self.active = False
+        self.ip_address = None
+        self.rtsp_url = None
+        return True
+
+    def poll_deinitialize(self):
+        """Retry a deferred safe stop without ever forcing media destruction."""
+
+        if self._wbc_started:
+            poll_stop = getattr(self._wbc, "poll_stop", None)
+            if poll_stop is None or poll_stop() is False:
+                return False
+            self._wbc_started = False
+        self._disconnect_wlan()
+        self._prepared = False
+        self.active = False
+        self.ip_address = None
+        self.rtsp_url = None
+        return True
+
+    def _disconnect_wlan(self):
         if self._wlan is not None:
             try:
                 self._wlan.disconnect()
@@ -76,9 +160,6 @@ class WifiRtspService:
                 except Exception:
                     pass
             self._wlan = None
-        self.active = False
-        self.ip_address = None
-        self.rtsp_url = None
 
     def _create_wlan(self):
         if self._wlan_factory is not None:
@@ -95,10 +176,29 @@ class WifiRtspService:
         if self._wbc is not None:
             return self._wbc
         try:
-            from libs.WBCRtsp import WBCRtsp
+            from config import (
+                WIFI_RTSP_BIT_RATE_KBPS,
+                WIFI_RTSP_ENCODE_TIMEOUT_MS,
+                WIFI_RTSP_FRAME_INTERVAL_MS,
+                WIFI_RTSP_MAX_EMPTY_FRAMES,
+                WIFI_RTSP_SEND_TIMEOUT_MS,
+                WIFI_RTSP_STOP_TIMEOUT_MS,
+                WIFI_RTSP_STREAM_TIMEOUT_MS,
+                WIFI_RTSP_WRITEBACK_TIMEOUT_MS,
+            )
+            from safe_wbc_rtsp import SafeWbcRtsp
         except ImportError:
-            raise RuntimeError("firmware is missing libs.WBCRtsp")
-        self._wbc = WBCRtsp
+            raise RuntimeError("safe_wbc_rtsp.py or its configuration is missing")
+        self._wbc = SafeWbcRtsp(
+            encode_timeout_ms=WIFI_RTSP_ENCODE_TIMEOUT_MS,
+            stream_timeout_ms=WIFI_RTSP_STREAM_TIMEOUT_MS,
+            send_timeout_ms=WIFI_RTSP_SEND_TIMEOUT_MS,
+            writeback_timeout_ms=WIFI_RTSP_WRITEBACK_TIMEOUT_MS,
+            frame_interval_ms=WIFI_RTSP_FRAME_INTERVAL_MS,
+            stop_timeout_ms=WIFI_RTSP_STOP_TIMEOUT_MS,
+            bit_rate_kbps=WIFI_RTSP_BIT_RATE_KBPS,
+            max_empty_frames=WIFI_RTSP_MAX_EMPTY_FRAMES,
+        )
         return self._wbc
 
     def _wait_for_connection(self):
@@ -112,6 +212,14 @@ class WifiRtspService:
             self._sleep_ms(100)
 
     def _resolve_rtsp_url(self):
+        getter = getattr(self._wbc, "get_rtsp_url", None)
+        if getter is not None:
+            try:
+                url = getter()
+                if url:
+                    return str(url)
+            except Exception:
+                pass
         server = getattr(self._wbc, "rtspserver", None)
         getter = getattr(server, "get_rtsp_url", None)
         if getter is not None:

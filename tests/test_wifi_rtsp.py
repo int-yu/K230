@@ -65,6 +65,8 @@ class FakeWBC:
         self.start_calls = 0
         self.stop_calls = 0
         self.rtspserver = FakeRtspServer()
+        self.active = False
+        self.worker_error = None
 
     def configure(self, width, height):
         self.configure_calls.append((width, height))
@@ -73,11 +75,13 @@ class FakeWBC:
         self.start_calls += 1
         if self.fail_start:
             raise RuntimeError("start failed")
+        self.active = True
 
     def stop(self):
         self.stop_calls += 1
         if self.fail_stop:
             raise RuntimeError("stop failed")
+        self.active = False
 
 
 def test_import_does_not_load_board_network_or_wbc(monkeypatch):
@@ -94,6 +98,12 @@ def test_config_defaults_keep_rtsp_disabled():
     assert config.WIFI_RTSP_ENABLED is False
     assert config.WIFI_RTSP_REQUIRED is False
     assert config.WIFI_RTSP_CONNECT_TIMEOUT_S == 15
+    assert config.WIFI_RTSP_EXCLUSIVE_DISPLAY is True
+    assert config.WIFI_RTSP_ENCODE_TIMEOUT_MS > 0
+    assert config.WIFI_RTSP_STREAM_TIMEOUT_MS > 0
+    assert config.WIFI_RTSP_SEND_TIMEOUT_MS > 0
+    assert config.WIFI_RTSP_STOP_TIMEOUT_MS > 0
+    assert config.WIFI_RTSP_MAX_EMPTY_FRAMES > 0
 
 
 def test_load_wifi_credentials_reads_ignored_module(monkeypatch):
@@ -130,7 +140,7 @@ def test_initialize_connects_and_starts_wbc_then_cleans_once():
     assert service.rtsp_url is None
 
 
-def test_wbc_stop_failure_still_disconnects_and_disables_wlan():
+def test_wbc_stop_failure_keeps_dependencies_intact_for_safe_retry():
     wifi_rtsp = importlib.import_module("wifi_rtsp")
     wlan = FakeWLAN()
     wbc = FakeWBC(fail_stop=True)
@@ -140,13 +150,13 @@ def test_wbc_stop_failure_still_disconnects_and_disables_wlan():
     )
     service.initialize(640, 480)
 
-    service.deinitialize()
+    assert service.deinitialize() is False
 
     assert wbc.stop_calls == 1
-    assert wlan.disconnect_calls == 1
-    assert wlan.active_calls == [True, False]
+    assert wlan.disconnect_calls == 0
+    assert wlan.active_calls == [True]
     assert service.active is False
-    assert service.rtsp_url is None
+    assert service.rtsp_url == "rtsp://192.168.137.25:8554/test"
 
 
 def test_connection_timeout_never_starts_wbc():
@@ -180,3 +190,21 @@ def test_wbc_start_failure_does_not_call_hanging_stop():
     assert wbc.start_calls == 1
     assert wbc.stop_calls == 0
     assert wlan.disconnect_calls == 1
+
+
+def test_service_active_reflects_safe_worker_failure():
+    wifi_rtsp = importlib.import_module("wifi_rtsp")
+    wlan = FakeWLAN()
+    wbc = FakeWBC()
+    service = wifi_rtsp.WifiRtspService(
+        "phone-hotspot", "12345678",
+        wlan_factory=lambda: wlan, wbc=wbc, time_module=FakeClock(),
+    ).initialize(640, 480)
+    wbc.worker_error = "RTSP worker failed: encoder timeout"
+    wbc.active = False
+
+    assert service.active is False
+    assert "encoder timeout" in service.last_error
+
+    wbc.active = True
+    service.deinitialize()

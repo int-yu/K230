@@ -8,7 +8,9 @@
 | --- | --- |
 | `config.py` | 摄像头、显示、串口和各检测器的默认参数 |
 | `camera_io.py` | `Sensor`、`Display`、`MediaManager` 生命周期 |
-| `wifi_rtsp.py` | 可选 Wi-Fi STA 与 WBC H.264 RTSP 服务；默认关闭，失败不影响原视觉流程 |
+| `wifi_rtsp.py` | 可选 Wi-Fi STA 与安全 H.264 RTSP 生命周期；默认关闭，失败回退原视觉流程 |
+| `safe_wbc_rtsp.py` | 项目内有限超时的 WBC/VENC/RTSP 实现，避免固件示例的无限等待 |
+| `local_rtsp_viewer/` | 仅本机使用的网页查看器；全局只建立一个 FFmpeg/RTSP 上游 |
 | `uart_io.py` | FPIOA、UART 生命周期、二进制数据帧、双向握手和目标偏差协议；可直接运行固定信号测试 |
 | `bluetooth_uart.py` | UART2 蓝牙单字符指令接收与缓存，导出 `BluetoothUART` |
 | `color.py` | 彩色光点检测，导出 `ColorSpotDetector` |
@@ -96,13 +98,15 @@ finally:
 
 ## Wi-Fi RTSP 标注画面推流
 
-`wifi_rtsp.py` 使用 CanMV 固件内置的 `network.WLAN`、`libs.WBCRtsp` 和 K230 硬件 H.264 VENC，把 `CameraIO.show_image()` 的最终显示画面推到局域网。检测框、文字、状态和 FPS 已经画在 Display 上，因此会同时出现在 VS Code Preview 和 RTSP 画面中。K230 不需要安装 openRTSP 或 LIVE555；它们只可作为电脑端客户端。
+`wifi_rtsp.py` 使用 CanMV 固件内置的 `network.WLAN`、Display writeback 和 K230 硬件 H.264 VENC，把 `CameraIO.show_image()` 的最终显示画面推到局域网。检测框、文字、状态和 FPS 已经画在 Display 上，因此网页画面与原 IDE 画面内容一致并包含全部批注。
 
-官方 `WBCRtsp` 当前固定使用：
+实板验证发现 VS Code IDE Preview 与 WBC RTSP 同时消费 Display writeback 会在运行约一分钟后卡住媒体管线。因此 `WIFI_RTSP_ENABLED = True` 时，默认由 `WIFI_RTSP_EXCLUSIVE_DISPLAY = True` 切换到板载 ST7701 显示路径并关闭 IDE Preview，只保留一条 WBC 消费链；RTSP 关闭或启动失败时恢复原来的 IDE Preview。这是当前固件下的稳定性保护，不是网页限制。
+
+项目内 `safe_wbc_rtsp.py` 保持官方协议参数：
 
 - H.264、无音频、约 2048 kbps。
 - 端口 `8554`、会话名 `test`。
-- 当前 Display 的实际宽高；IDE 模式下本项目为 `640x480`。
+- 当前 Display 的实际宽高；默认 RTSP 独占模式使用板载 `800x480`，其中 `640x480` 识别画面居中显示。
 
 ### 配置热点
 
@@ -119,12 +123,13 @@ WIFI_SSID = "your-2.4g-hotspot"
 WIFI_PASSWORD = "your-hotspot-password"
 ```
 
-`wifi_secrets.py` 已加入 `.gitignore`，不要提交真实密码。把它和 `wifi_rtsp.py`、`camera_io.py`、`config.py` 一起上传到 `/sdcard/K230`。
+`wifi_secrets.py` 已加入 `.gitignore`，不要提交真实密码。把它和 `safe_wbc_rtsp.py`、`wifi_rtsp.py`、`camera_io.py`、`config.py` 一起上传到 `/sdcard/K230`。
 在 `config.py` 中开启：
 
 ```python
 WIFI_RTSP_ENABLED = True
 WIFI_RTSP_REQUIRED = False
+WIFI_RTSP_EXCLUSIVE_DISPLAY = True
 ```
 
 现有检测程序不需要改主循环。任一程序创建并初始化 `CameraIO` 后会自动尝试连接热点；成功时终端打印类似：
@@ -133,7 +138,9 @@ WIFI_RTSP_REQUIRED = False
 Wi-Fi RTSP started: rtsp://192.168.137.25:8554/test
 ```
 
-电脑连接同一热点后，在 VLC 的“打开网络串流”或 ffplay 中打开该地址：
+电脑连接同一热点后，可以双击 `local_rtsp_viewer/start_viewer.bat`，在仅本机开放的网页中输入该地址。查看器全局只维护一个 FFmpeg 上游，重复点击不会累积 K230 连接，10 秒没有首帧会显示具体错误。
+
+也可以在 VLC 的“打开网络串流”或 ffplay 中打开该地址：
 
 ```powershell
 ffplay -fflags nobuffer -flags low_delay rtsp://192.168.137.25:8554/test
@@ -141,7 +148,9 @@ ffplay -fflags nobuffer -flags low_delay rtsp://192.168.137.25:8554/test
 
 ### 失败降级
 
-默认 `WIFI_RTSP_REQUIRED = False`。缺少 `wifi_secrets.py`、固件没有 WLAN/WBC、密码错误、连接超时、DHCP 失败或 RTSP 启动失败时，终端会打印以 `Wi-Fi RTSP unavailable; continuing:` 开头的消息；摄像头、检测、串口、拍照和 IDE Preview 继续运行。
+默认 `WIFI_RTSP_REQUIRED = False`。缺少 `wifi_secrets.py`、固件媒体依赖不完整、密码错误、连接超时、DHCP 失败或 RTSP 启动失败时，终端会打印以 `Wi-Fi RTSP unavailable; continuing:` 开头的消息。若失败发生在媒体启动前，直接使用原 IDE Preview；若发生在 Display 初始化后，`CameraIO` 会释放第一次媒体资源并以原 IDE 模式重新初始化。
+
+`safe_wbc_rtsp.py` 对 `SendFrame`、`GetStream` 和 RTSP 发送都使用有限超时，并把停止等待限制为 2 秒。如果工作线程仍未退出，它不会继续销毁 Display/MediaManager，而会报告必须断电重启，避免再次运行时访问已经释放的媒体对象。
 
 只有专用程序明确要求“没有 RTSP 就不能运行”时才设为：
 
@@ -156,21 +165,22 @@ WIFI_RTSP_REQUIRED = True
 ```python
 import network
 import multimedia
-from libs.WBCRtsp import WBCRtsp
-print("WLAN/RTSP/WBC available")
+from media.vencoder import Encoder, ChnAttrStr, StreamData
+from _media import Display
+print("WLAN/RTSP/VENC available")
 ```
 
-缺少任一模块时需要升级到包含无线网络与 `WBCRtsp` 的 CanMV K230 固件，或者把与该固件版本匹配的官方 `WBCRtsp.py` 上传到 `/sdcard/libs`。不要混用不同固件版本的媒体库。
+缺少任一模块时需要升级到包含无线网络、Display writeback、VENC 和 RTSP server 的 CanMV K230 固件。不要从其他固件复制 `_media`、`mpp` 或 VENC 二进制模块。
 
 ### 帧率与温升验证
 
-RTSP 使用硬件 H.264 编码，但 WBC、内存搬运和 Wi-Fi 仍会增加负载。部署前对同一个算法分别连续运行至少 10 分钟：
+RTSP 使用硬件 H.264 编码，但 WBC、内存搬运和 Wi-Fi 仍会增加负载。安全实现默认约 20 FPS 编码节奏，优先保证检测主循环和可停止性。部署前对同一个算法分别连续运行至少 10 分钟：
 
 1. `WIFI_RTSP_ENABLED = False`，记录平均 FPS 和温度。
 2. `WIFI_RTSP_ENABLED = True`，连接电脑播放器后记录平均 FPS 和温度。
-3. 目标是平均 FPS 降幅不超过约 10%；该值是本项目验收目标，不是芯片保证。
+3. 记录实际降幅、网页帧率和温度；不同固件、热点与算法负载会有明显差异，不再假定固定 10% 降幅。
 
-VS Code Preview 走 USB IDE 帧缓冲，RTSP 走 Wi-Fi，两者同时开启属于双路输出。性能优先时可以关闭 VS Code Preview 窗口，或让程序选择板载屏幕显示目标，但本模块不会自动关闭 IDE Preview，以保证 RTSP 失败后原调试画面仍然存在。
+RTSP 开启时 IDE Preview 会自动关闭，以避免同一 Display writeback 被双路消费。终端文字输出仍保留；网页看到的是同一张经过 `show_image()` 的最终标注画面。关闭 RTSP 后无需改主程序，IDE Preview 按原配置恢复。
 
 ## 彩色光点模块
 
@@ -1102,6 +1112,7 @@ class MyTargetDetector:
 Wi-Fi RTSP 标注画面推流还需要：
 
 - `wifi_rtsp.py`
+- `safe_wbc_rtsp.py`
 - `wifi_secrets.py`（由示例复制并填写，不提交 Git）
 - `camera_io.py`
 - `config.py`
