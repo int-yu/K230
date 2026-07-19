@@ -17,6 +17,7 @@
 | `pencil_rectangle.py` | 细铅笔线方框检测，导出 `PencilRectangleDetector`；多重方框中选择估算边框最细者 |
 | `corner_cycle.py` | 独立的方框四角顺时针停留、移动和串口输出应用 |
 | `num.py` | 打印数字检测，导出 `DigitDetector`；直接运行时也是完整识别程序 |
+| `capture.py` | 按需拍照并保存到 TF 卡，导出 `CaptureService`；直接运行时等待 CAPTURE 帧并存图 |
 
 原 `rectangle_detector.py` 已合并进 `tangle.py`，不再需要上传。
 
@@ -651,6 +652,64 @@ digit_detector = DigitDetector(template_dir="_digit_templates")
 - `shape_distance`：与最终数字模板轮廓的形状距离，越小越相似；不支持形状匹配时为 `None`。
 - `center_x`、`center_y`、`x`、`y`、`w`、`h`、`bbox`、`area`：位置和轮廓信息。
 
+## 拍照存图模块
+
+`capture.py` 导出 `CaptureService`，收到 MSPM0 发来的 CAPTURE 帧（`TYPE=0x20`）后，在主循环的下一帧把当前画面保存到 TF 卡，然后回一个 `CAPTURE_ACK` 帧（`TYPE=0x21`）。照片不通过串口回传，事后拔卡拷贝。
+
+### 公共方法
+
+| 方法 | 说明 |
+| --- | --- |
+| `__init__(save_dir, prefix, suffix, quality, max_pending)` | 构造并扫描已有文件，确定下一个编号，不启动任何硬件 |
+| `handle_frames(frames)` | 从 `poll()` 的返回值中过滤 `0x20` 帧，累加待拍张数，返回本次新增张数 |
+| `update(image)` | 主循环每帧调用；有待拍时保存一张，返回 `(saved_count, last_index)`；无待拍返回 `(0, 0)` |
+| `save(image)` | 保存一张到 `save_dir/prefix_NNNN.suffix`，返回本张编号；失败返回 `None` |
+
+### 属性
+
+| 属性 | 说明 |
+| --- | --- |
+| `pending` | 当前待拍张数（只读） |
+| `next_index` | 下一张照片的编号（只读） |
+
+### 与 `poll()` 配合的用法示例
+
+```python
+from capture import CaptureService
+from uart_io import TrackingUART
+from camera_io import CameraIO, DISPLAY_TARGET_IDE
+from config import CAPTURE_MESSAGE_ACK
+
+service = CaptureService()
+camera = CameraIO(display_target=DISPLAY_TARGET_IDE).initialize()
+tracking_uart = TrackingUART().initialize()
+tracking_uart.wait_for_handshake()
+
+while True:
+    image = camera.snapshot()
+    frames = tracking_uart.poll()
+    service.handle_frames(frames)
+    saved, last_index = service.update(image)
+    if saved > 0:
+        tracking_uart.send_frame(
+            CAPTURE_MESSAGE_ACK,
+            bytes((1, last_index & 0xFF, (last_index >> 8) & 0xFF)),
+        )
+    camera.show_image(image)
+```
+
+### `CAPTURE_` 参数表
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `CAPTURE_SAVE_DIR` | `/sdcard/pic` | TF 卡照片保存目录 |
+| `CAPTURE_FILE_PREFIX` | `cap` | 文件名前缀 |
+| `CAPTURE_FILE_SUFFIX` | `.jpg` | 文件扩展名 |
+| `CAPTURE_JPEG_QUALITY` | `95` | JPEG 保存质量（0–100） |
+| `CAPTURE_MAX_PENDING` | `20` | 单次最多累积的待拍张数上限 |
+| `CAPTURE_MESSAGE_REQUEST` | `0x20` | MSPM0 发来的拍照请求帧 TYPE |
+| `CAPTURE_MESSAGE_ACK` | `0x21` | K230 回复的拍照确认帧 TYPE |
+
 ## 串口模块
 
 `uart_io.py` 导出 `TrackingUART`。默认配置是：
@@ -1023,5 +1082,13 @@ class MyTargetDetector:
 - `config.py`
 - 数字模板目录及 `0.png` 到 `9.png`
 - `camera_io.py`（仅直接运行完整摄像头示例需要）
+
+拍照存图功能至少需要：
+
+- `capture.py`
+- `config.py`
+
+直接运行 `capture.py` 的存图主程序还需要 `camera_io.py` 和 `uart_io.py`；
+传入 `enable_uart=False` 时不需要 `uart_io.py`。
 
 作为模块导入时，调用方自行负责摄像头、显示和串口生命周期。
