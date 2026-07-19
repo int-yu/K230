@@ -70,3 +70,45 @@ def test_update_without_pending_saves_nothing(tmp_path):
     assert saved == 0
     assert last_index == 0
     assert image.saved_paths == []
+
+
+class FailingImage:
+    """save() 始终抛 OSError 的假图像对象，用于测试写入失败路径。"""
+
+    def save(self, path, quality=None):
+        raise OSError("TF 卡未挂载")
+
+
+def test_save_failure_decrements_pending_and_does_not_advance_index(tmp_path):
+    """save() 抛 OSError 时 update() 应返回 (0, 0)、pending 递减、next_index 不推进。"""
+    service = CaptureService(save_dir=str(tmp_path))
+    # 先累加两张待拍
+    service.handle_frames([(0x20, 0, bytes((2,)))])
+    assert service.pending == 2
+    initial_index = service.next_index
+
+    image = FailingImage()
+    saved, last_index = service.update(image)
+
+    # 失败时返回 (0, 0)
+    assert saved == 0
+    assert last_index == 0
+    # pending 减了一（消耗一次机会，不无限重试）
+    assert service.pending == 1
+    # next_index 没有推进（文件没写成，编号留给下次）
+    assert service.next_index == initial_index
+
+
+def test_handle_frames_returns_actual_added_when_clamped(tmp_path):
+    """夹紧时 handle_frames() 应返回实际新增量，而不是请求量。"""
+    service = CaptureService(save_dir=str(tmp_path), max_pending=20)
+    # 先占用 18 张，剩余容量 2
+    service.handle_frames([(0x20, 0, bytes((18,)))])
+    assert service.pending == 18
+
+    # 请求 5 张，但容量只剩 2
+    added = service.handle_frames([(0x20, 0, bytes((5,)))])
+
+    # 应返回实际新增量 2，而不是请求量 5
+    assert added == 2
+    assert service.pending == 20

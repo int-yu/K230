@@ -92,7 +92,8 @@ class CaptureService:
     def handle_frames(self, frames):
         """从 poll() 的返回值中挑出 CAPTURE 帧，累加待拍张数。
 
-        返回本次新增的张数。非 CAPTURE 帧会被忽略。
+        返回本次实际新增的张数（受 max_pending 夹紧后的结果）。
+        非 CAPTURE 帧会被忽略。
         """
         added = 0
         for message_type, _sequence, payload in frames:
@@ -106,9 +107,11 @@ class CaptureService:
         if added <= 0:
             return 0
 
+        # 先算剩余容量，只增加实际能容纳的张数，使返回值与 _pending 增量一致。
+        capacity = self.max_pending - self._pending
+        if added > capacity:
+            added = capacity
         self._pending += added
-        if self._pending > self.max_pending:
-            self._pending = self.max_pending
         return added
 
     def save(self, image):
@@ -117,10 +120,15 @@ class CaptureService:
         path = self._build_path(index)
 
         try:
-            image.save(path, quality=self.quality)
-        except TypeError:
-            # 部分固件的 save() 不接受 quality 关键字。
-            image.save(path)
+            try:
+                image.save(path, quality=self.quality)
+            except TypeError:
+                # 部分固件的 save() 不接受 quality 关键字。
+                image.save(path)
+        except Exception:
+            # TF 卡未挂载、已写满或路径不可写。不推进编号，
+            # 让下一张重用同一个编号，避免在卡上留下空洞。
+            return None
 
         self._next_index = index + 1
         return index
