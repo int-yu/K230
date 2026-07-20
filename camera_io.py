@@ -42,6 +42,10 @@ from config import (
     IDE_DISPLAY_Y,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
+    WIFI_RTSP_CONNECT_TIMEOUT_S,
+    WIFI_RTSP_ENABLED,
+    WIFI_RTSP_EXCLUSIVE_DISPLAY,
+    WIFI_RTSP_REQUIRED,
 )
 
 
@@ -52,13 +56,32 @@ DISPLAY_TARGET_IDE = "ide"
 class CameraIO:
     """统一管理摄像头采集、显示输出和媒体资源。"""
 
-    def __init__(self, display_target=DISPLAY_TARGET_BOARD):
+    def __init__(
+        self,
+        display_target=DISPLAY_TARGET_BOARD,
+        enable_rtsp=None,
+        rtsp_required=None,
+        rtsp_service_factory=None,
+    ):
         self.display_target = display_target
+        self.enable_rtsp = (
+            WIFI_RTSP_ENABLED if enable_rtsp is None else bool(enable_rtsp)
+        )
+        self.rtsp_required = (
+            WIFI_RTSP_REQUIRED if rtsp_required is None
+            else bool(rtsp_required)
+        )
         self._configure_display(display_target)
-
+        self._rtsp_exclusive_display = False
+        self._apply_rtsp_display_policy()
+        self._rtsp_service_factory = rtsp_service_factory
+        self._rtsp_service = None
+        self._rtsp_error = None
         self.sensor = None
         self._running = False
         self._resources_active = False
+        self._display_initialized = False
+        self._media_initialized = False
 
     def initialize(self):
         """初始化摄像头、显示和媒体缓冲区。"""
@@ -69,31 +92,27 @@ class CameraIO:
         self._resources_active = True
 
         try:
-            self.sensor = Sensor(
-                id=CAMERA_ID,
-                width=CAMERA_SOURCE_WIDTH,
-                height=CAMERA_SOURCE_HEIGHT,
-                fps=CAMERA_FPS,
-            )
-
-            self.sensor.reset()
-            self.sensor.set_hmirror(CAMERA_HMIRROR)
-            self.sensor.set_vflip(CAMERA_VFLIP)
-            self.sensor.set_framesize(
-                width=IMAGE_WIDTH,
-                height=IMAGE_HEIGHT,
-            )
-            self.sensor.set_pixformat(
-                self._resolve_pixel_format(CAMERA_PIXEL_FORMAT)
-            )
-
-            self._initialize_display()
-            MediaManager.init()
-            self.sensor.run()
-            self._running = True
-
+            self._prepare_rtsp()
+            try:
+                self._initialize_camera_resources()
+            except Exception as error:
+                if (
+                    self._rtsp_service is None or
+                    self.rtsp_required or
+                    not self._rtsp_exclusive_display
+                ):
+                    raise
+                self._rtsp_error = (
+                    "Wi-Fi RTSP display path startup failed: {}".format(error)
+                )
+                self._stop_rtsp_service()
+                self._fallback_to_normal_display()
+            self._start_rtsp()
         except Exception:
-            self.deinitialize()
+            try:
+                self.deinitialize()
+            except Exception as cleanup_error:
+                print("CameraIO cleanup incomplete: {}".format(cleanup_error))
             raise
 
         return self
@@ -121,40 +140,229 @@ class CameraIO:
                 y=self.display_y,
             )
 
+    @property
+    def rtsp_active(self):
+        return bool(
+            self._rtsp_service is not None and
+            self._rtsp_service.active
+        )
+
+    @property
+    def rtsp_url(self):
+        if self._rtsp_service is None:
+            return None
+        return self._rtsp_service.rtsp_url
+
+    @property
+    def rtsp_error(self):
+        if self._rtsp_service is not None:
+            worker_error = getattr(
+                self._rtsp_service,
+                "worker_error",
+                None,
+            )
+            if worker_error:
+                return worker_error
+            service_error = getattr(self._rtsp_service, "last_error", None)
+            if service_error:
+                return service_error
+        return self._rtsp_error
+
+    def _prepare_rtsp(self):
+        if not self.enable_rtsp:
+            return
+        try:
+            if self._rtsp_service_factory is None:
+                from wifi_rtsp import create_default_wifi_rtsp_service
+                service = create_default_wifi_rtsp_service(
+                    WIFI_RTSP_CONNECT_TIMEOUT_S
+                )
+            else:
+                service = self._rtsp_service_factory()
+            self._rtsp_service = service
+            prepare = getattr(service, "prepare", None)
+            if prepare is not None:
+                prepare()
+            if self._rtsp_exclusive_display:
+                print(
+                    "Wi-Fi RTSP mode: IDE Preview disabled; "
+                    "web stream keeps final annotations"
+                )
+        except Exception as error:
+            self._rtsp_error = self._rtsp_failure_message(error)
+            self._stop_rtsp_service()
+            if self.rtsp_required:
+                raise
+            self._restore_normal_display_policy()
+            print("Wi-Fi RTSP unavailable; continuing: {}".format(
+                self._rtsp_error
+            ))
+
+    def _start_rtsp(self):
+        if self._rtsp_service is None:
+            return
+        try:
+            start_stream = getattr(self._rtsp_service, "start_stream", None)
+            if start_stream is None:
+                self._rtsp_service.initialize(
+                    self.display_width,
+                    self.display_height,
+                )
+            else:
+                start_stream(self.display_width, self.display_height)
+            self._rtsp_error = None
+            print("Wi-Fi RTSP started: {}".format(
+                self._rtsp_service.rtsp_url
+            ))
+        except Exception as error:
+            self._rtsp_error = self._rtsp_failure_message(error)
+            self._stop_rtsp_service()
+            if self.rtsp_required:
+                raise
+
+            # RTSP mode suppresses IDE Preview to avoid two consumers sharing
+            # the same Display writeback channel. Rebuild the original media
+            # path if stream startup fails, so optional RTSP remains fail-open.
+            self._fallback_to_normal_display()
+
     def deinitialize(self):
         """按安全顺序释放摄像头、显示和媒体资源。"""
 
-        if not self._resources_active and self.sensor is None:
-            return
+        if (
+            not self._resources_active and
+            self.sensor is None and
+            self._rtsp_service is None
+        ):
+            return True
 
+        if self._rtsp_service is not None:
+            self._stop_rtsp_service()
+
+        self._release_camera_resources()
+        self._resources_active = False
+        gc.collect()
+        return True
+
+    def _initialize_camera_resources(self):
+        self.sensor = Sensor(
+            id=CAMERA_ID,
+            width=CAMERA_SOURCE_WIDTH,
+            height=CAMERA_SOURCE_HEIGHT,
+            fps=CAMERA_FPS,
+        )
+
+        self.sensor.reset()
+        self.sensor.set_hmirror(CAMERA_HMIRROR)
+        self.sensor.set_vflip(CAMERA_VFLIP)
+        self.sensor.set_framesize(
+            width=IMAGE_WIDTH,
+            height=IMAGE_HEIGHT,
+        )
+        self.sensor.set_pixformat(
+            self._resolve_pixel_format(CAMERA_PIXEL_FORMAT)
+        )
+
+        self._initialize_display()
+        self._display_initialized = True
+        MediaManager.init()
+        self._media_initialized = True
+        self.sensor.run()
+        self._running = True
+
+    def _release_camera_resources(self):
         if self.sensor is not None:
             try:
                 self.sensor.stop()
+                self.sensor = None
+                self._running = False
+            except Exception as error:
+                raise RuntimeError(
+                    "camera media cleanup failed; refusing unsafe restart: "
+                    "Sensor.stop: {}".format(error)
+                )
+
+        display_released = False
+        if self._display_initialized:
+            try:
+                Display.deinit()
+                self._display_initialized = False
+                display_released = True
+            except Exception as error:
+                raise RuntimeError(
+                    "camera media cleanup failed; refusing unsafe restart: "
+                    "Display.deinit: {}".format(error)
+                )
+
+        if display_released:
+            try:
+                os.exitpoint(os.EXITPOINT_ENABLE_SLEEP)
             except Exception:
                 pass
 
-        self._running = False
+            self._sleep_ms(100)
 
-        try:
-            Display.deinit()
-        except Exception:
-            pass
-
-        try:
-            os.exitpoint(os.EXITPOINT_ENABLE_SLEEP)
-        except Exception:
-            pass
-
-        self._sleep_ms(100)
-
-        try:
-            MediaManager.deinit()
-        except Exception:
-            pass
-
+        if self._media_initialized:
+            try:
+                MediaManager.deinit()
+                self._media_initialized = False
+            except Exception as error:
+                raise RuntimeError(
+                    "camera media cleanup failed; refusing unsafe restart: "
+                    "MediaManager.deinit: {}".format(error)
+                )
         self.sensor = None
-        self._resources_active = False
-        gc.collect()
+        self._running = False
+        return True
+
+    def _stop_rtsp_service(self):
+        if self._rtsp_service is None:
+            return True
+        stopped = self._rtsp_service.deinitialize()
+        if stopped is False:
+            error = getattr(self._rtsp_service, "last_error", None)
+            raise RuntimeError(
+                error or (
+                    "RTSP worker is still running; media resources were "
+                    "not released. Power-cycle the K230 before running again."
+                )
+            )
+        self._rtsp_service = None
+        return True
+
+    def _rtsp_failure_message(self, error):
+        if self._rtsp_service is not None:
+            service_error = getattr(
+                self._rtsp_service,
+                "last_error",
+                None,
+            )
+            if service_error:
+                return service_error
+        return str(error)
+
+    def _apply_rtsp_display_policy(self):
+        if (
+            self.enable_rtsp and
+            WIFI_RTSP_EXCLUSIVE_DISPLAY and
+            self.display_target == DISPLAY_TARGET_IDE
+        ):
+            # Display.VIRT owns the IDE framebuffer path even when callers pass
+            # to_ide=False on affected firmware. Use the physical display path
+            # so RTSP is the only Display writeback consumer.
+            self._configure_display(DISPLAY_TARGET_BOARD)
+            self._rtsp_exclusive_display = True
+
+    def _restore_normal_display_policy(self):
+        self._configure_display(self.display_target)
+        self._rtsp_exclusive_display = False
+
+    def _fallback_to_normal_display(self):
+        self._release_camera_resources()
+        self._restore_normal_display_policy()
+        self._initialize_camera_resources()
+        print("Wi-Fi RTSP unavailable; continuing: {}".format(
+            self._rtsp_error
+        ))
 
     def _initialize_display(self):
         if self.display_mode == DISPLAY_MODE_ST7701:

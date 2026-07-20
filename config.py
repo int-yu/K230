@@ -433,7 +433,10 @@ LINE_DRAW_FONT_SCALE = 0.55
 LINE_DEMO_GC_INTERVAL = 30
 
 
-# ---------------------------------------------------------------- 拍照存图
+# ------------------------------------------------------------
+# 拍照存图（capture.py）
+# ------------------------------------------------------------
+
 CAPTURE_SAVE_DIR = "/sdcard/pic"
 CAPTURE_FILE_PREFIX = "cap"
 CAPTURE_FILE_SUFFIX = ".jpg"
@@ -442,3 +445,21 @@ CAPTURE_MAX_PENDING = 20
 CAPTURE_MESSAGE_REQUEST = 0x20
 CAPTURE_MESSAGE_ACK = 0x21
 CAPTURE_WARMUP_FRAMES = 30
+
+
+# ------------------------------------------------------------
+# Wi-Fi RTSP 标注画面推流（wifi_rtsp.py）
+# ------------------------------------------------------------
+
+WIFI_RTSP_ENABLED = False
+WIFI_RTSP_REQUIRED = False
+WIFI_RTSP_CONNECT_TIMEOUT_S = 15
+WIFI_RTSP_EXCLUSIVE_DISPLAY = True
+WIFI_RTSP_ENCODE_TIMEOUT_MS = 100
+WIFI_RTSP_STREAM_TIMEOUT_MS = 100
+WIFI_RTSP_SEND_TIMEOUT_MS = 100
+WIFI_RTSP_WRITEBACK_TIMEOUT_MS = 100
+WIFI_RTSP_FRAME_INTERVAL_MS = 50
+WIFI_RTSP_STOP_TIMEOUT_MS = 2000
+WIFI_RTSP_BIT_RATE_KBPS = 2048
+WIFI_RTSP_MAX_EMPTY_FRAMES = 100
