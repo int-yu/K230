@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>K230 视频画面</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+      background: #0b1020;
+      color: #eef3ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background:
+        radial-gradient(circle at 20% 10%, #203b70 0, transparent 32%),
+        radial-gradient(circle at 85% 90%, #153e3b 0, transparent 28%),
+        #0b1020;
+    }
+    main {
+      width: min(1080px, 100%);
+      padding: 22px;
+      border: 1px solid #293859;
+      border-radius: 18px;
+      background: rgba(12, 19, 38, 0.92);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+    }
+    h1 { margin: 0 0 6px; font-size: clamp(24px, 4vw, 38px); }
+    .hint { margin: 0 0 18px; color: #aebbd4; }
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    input, button {
+      min-height: 44px;
+      border: 1px solid #394d76;
+      border-radius: 10px;
+      font: inherit;
+    }
+    input {
+      width: 100%;
+      padding: 0 13px;
+      background: #090f1f;
+      color: #f4f7ff;
+    }
+    button {
+      padding: 0 18px;
+      cursor: pointer;
+      font-weight: 700;
+      background: #45d0a5;
+      color: #071611;
+    }
+    button.secondary { background: #273754; color: #eef3ff; }
+    button:disabled { cursor: wait; opacity: 0.55; }
+    .status { min-height: 24px; margin-bottom: 10px; color: #f5c768; }
+    .screen {
+      overflow: hidden;
+      min-height: 320px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #2b3b5b;
+      border-radius: 12px;
+      background: #02040a;
+    }
+    img { display: none; width: 100%; height: auto; object-fit: contain; }
+    .placeholder { padding: 30px; color: #75839f; text-align: center; }
+    footer { margin-top: 13px; color: #8190ac; font-size: 13px; }
+    @media (max-width: 720px) {
+      .controls { grid-template-columns: 1fr 1fr; }
+      .controls input { grid-column: 1 / -1; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>K230 视频画面</h1>
+    <p class="hint">输入 K230 终端打印的 RTSP 地址。查看器只会建立一个上游连接。</p>
+    <div class="controls">
+      <input id="url" spellcheck="false" value="rtsp://192.168.137.25:8554/test" aria-label="RTSP 地址">
+      <button id="start" type="button">开始播放</button>
+      <button id="stop" class="secondary" type="button">停止</button>
+    </div>
+    <div id="status" class="status">等待输入 RTSP 地址</div>
+    <div class="screen">
+      <div id="placeholder" class="placeholder">启动 K230 推流后，点击“开始播放”</div>
+      <img id="video" alt="K230 RTSP 视频画面">
+    </div>
+    <footer>页面绑定 127.0.0.1，仅当前电脑可以访问。首帧超过 10 秒会显示明确错误。</footer>
+  </main>
+  <script>
+    const input = document.querySelector('#url');
+    const video = document.querySelector('#video');
+    const status = document.querySelector('#status');
+    const placeholder = document.querySelector('#placeholder');
+    const startButton = document.querySelector('#start');
+    const stopButton = document.querySelector('#stop');
+
+    let startInFlight = false;
+    let currentGeneration = null;
+    let statusTimer = null;
+    let connectionTimer = null;
+
+    input.value = localStorage.getItem('k230RtspUrl') || input.value;
+
+    function setStarting(starting) {
+      startInFlight = starting;
+      startButton.disabled = starting;
+      input.disabled = starting;
+    }
+
+    function clearTimers() {
+      if (statusTimer !== null) clearInterval(statusTimer);
+      if (connectionTimer !== null) clearTimeout(connectionTimer);
+      statusTimer = null;
+      connectionTimer = null;
+    }
+
+    async function readStatus() {
+      const response = await fetch('/api/status', {cache: 'no-store'});
+      return response.json();
+    }
+
+    function showStopped(message = '已停止') {
+      clearTimers();
+      video.removeAttribute('src');
+      video.style.display = 'none';
+      placeholder.style.display = 'block';
+      currentGeneration = null;
+      status.textContent = message;
+      setStarting(false);
+    }
+
+    async function stop() {
+      showStopped('正在停止…');
+      try {
+        await fetch('/api/stop', {method: 'POST'});
+        status.textContent = '已停止';
+      } catch (error) {
+        status.textContent = `停止失败：${error.message}`;
+      }
+    }
+
+    function beginStatusPolling() {
+      statusTimer = setInterval(async () => {
+        try {
+          const value = await readStatus();
+          if (value.generation !== currentGeneration) return;
+          if (value.state === 'failed') {
+            showStopped(`连接失败：${value.error || 'FFmpeg 拉流失败'}`);
+          } else if (value.state === 'starting') {
+            status.textContent = '正在连接 K230，等待首帧…';
+          }
+        } catch (error) {
+          status.textContent = `状态读取失败：${error.message}`;
+        }
+      }, 500);
+    }
+
+    async function start() {
+      if (startInFlight) return;
+      const url = input.value.trim();
+      if (!url.toLowerCase().startsWith('rtsp://')) {
+        status.textContent = '请输入以 rtsp:// 开头的完整地址';
+        return;
+      }
+
+      setStarting(true);
+      clearTimers();
+      video.removeAttribute('src');
+      video.style.display = 'none';
+      placeholder.style.display = 'block';
+      status.textContent = '正在启动本机 FFmpeg…';
+      localStorage.setItem('k230RtspUrl', url);
+
+      try {
+        const response = await fetch('/api/start', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({url}),
+        });
+        const value = await response.json();
+        if (!response.ok) throw new Error(value.error || `HTTP ${response.status}`);
+
+        currentGeneration = value.generation;
+        status.textContent = '正在连接 K230，等待首帧…';
+        placeholder.style.display = 'none';
+        video.style.display = 'block';
+        video.src = `/stream.mjpg?generation=${currentGeneration}`;
+        beginStatusPolling();
+        connectionTimer = setTimeout(async () => {
+          if (currentGeneration === null) return;
+          const current = await readStatus().catch(() => null);
+          if (current && current.state !== 'streaming') {
+            showStopped(`连接失败：${current.error || '等待首帧超时'}`);
+          }
+        }, 12000);
+      } catch (error) {
+        showStopped(`连接失败：${error.message}`);
+      } finally {
+        setStarting(false);
+      }
+    }
+
+    video.addEventListener('load', () => {
+      if (currentGeneration === null) return;
+      status.textContent = '正在播放（共享单连接）';
+      if (connectionTimer !== null) clearTimeout(connectionTimer);
+      connectionTimer = null;
+    });
+    video.addEventListener('error', async () => {
+      if (currentGeneration === null) return;
+      const value = await readStatus().catch(() => null);
+      showStopped(`连接失败：${value?.error || '未收到有效视频帧'}`);
+    });
+    startButton.addEventListener('click', start);
+    stopButton.addEventListener('click', stop);
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') start();
+    });
+  </script>
+</body>
+</html>

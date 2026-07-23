@@ -2,6 +2,13 @@
 
 import time
 
+import sys
+
+# CanMV 按绝对路径启动脚本时不会把脚本所在目录加入 sys.path，
+# 会导致 import config 失败。这里补上，重复导入不会重复追加。
+if "/sdcard/K230" not in sys.path:
+    sys.path.append("/sdcard/K230")
+
 from config import (
     UART_BAUDRATE,
     UART_HANDSHAKE_PERIOD_MS,
@@ -21,6 +28,19 @@ UART_FRAME_MAX_PAYLOAD = 32
 UART_MESSAGE_READY = 0x01
 UART_MESSAGE_READY_ACK = 0x02
 UART_MESSAGE_TARGET = 0x10
+UART_MESSAGE_LINE = 0x11
+# 预留给后续病房号上报，本模块暂不实现。
+UART_MESSAGE_DIGIT = 0x12
+
+# LINE 的 PAYLOAD 固定发送这么多条带偏差。
+UART_LINE_BAND_COUNT = 5
+
+# junction_flags 的位定义。串口模块不导入任何检测器，因此这里重复一份，
+# 与 line.py 的 JUNCTION_FLAG_* 必须保持一致。
+UART_LINE_FLAG_JUNCTION = 0x01
+UART_LINE_FLAG_LEFT = 0x02
+UART_LINE_FLAG_RIGHT = 0x04
+UART_LINE_FLAG_LOST = 0x08
 
 UART_TEST_TARGET_VALID = True
 UART_TEST_TARGET_X = 123
@@ -450,6 +470,64 @@ class TrackingUART(UARTIO):
         frame = self.send_frame(
             UART_MESSAGE_TARGET,
             payload,
+            sequence=frame_id,
+        )
+        self._last_send_ms = now_ms
+        return frame
+
+    def send_line(
+        self,
+        result,
+        frame_id=None,
+        force=False,
+        now_ms=None,
+    ):
+        """维护握手并周期发送 LINE；未握手或未到周期时返回 None。
+
+        result 直接使用 LineTrackDetector 本帧的返回值，传 None 表示
+        本帧没有检测到红线。PAYLOAD 为 12 字节：
+
+            valid:u8 | b0..b4:int16_LE | junction_flags:u8
+
+        b0 最近、b4 最远，单位是原图像素，符号与 TARGET 一致。
+        valid=0 时全部偏差强制为 0，该 0 是无效占位值，单片机不能理解
+        为“红线位于画面中心”。
+        """
+        self._require_initialized()
+        if now_ms is None:
+            now_ms = _ticks_ms()
+
+        if not self.update_handshake(now_ms):
+            return None
+        if not force and not self.ready_to_send(now_ms):
+            return None
+
+        if frame_id is None:
+            frame_id = self._allocate_sequence()
+        else:
+            frame_id = int(frame_id) & 0xFF
+
+        if result is None:
+            valid_value = 0
+            offsets = (0,) * UART_LINE_BAND_COUNT
+            flags = UART_LINE_FLAG_LOST
+        else:
+            valid_value = 1
+            offsets = tuple(result["offsets"])[:UART_LINE_BAND_COUNT]
+            if len(offsets) < UART_LINE_BAND_COUNT:
+                offsets = offsets + (0,) * (
+                    UART_LINE_BAND_COUNT - len(offsets)
+                )
+            flags = int(result["junction_flags"]) & 0xFF
+
+        payload = bytearray((valid_value,))
+        for offset in offsets:
+            payload.extend(_encode_int16(offset))
+        payload.append(flags)
+
+        frame = self.send_frame(
+            UART_MESSAGE_LINE,
+            bytes(payload),
             sequence=frame_id,
         )
         self._last_send_ms = now_ms

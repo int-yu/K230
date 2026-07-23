@@ -8,14 +8,19 @@
 | --- | --- |
 | `config.py` | 摄像头、显示、串口和各检测器的默认参数 |
 | `camera_io.py` | `Sensor`、`Display`、`MediaManager` 生命周期 |
+| `wifi_rtsp.py` | 可选 Wi-Fi STA 与安全 H.264 RTSP 生命周期；默认关闭，失败回退原视觉流程 |
+| `safe_wbc_rtsp.py` | 项目内有限超时的 WBC/VENC/RTSP 实现，避免固件示例的无限等待 |
+| `local_rtsp_viewer/` | 仅本机使用的网页查看器；全局只建立一个 FFmpeg/RTSP 上游 |
 | `uart_io.py` | FPIOA、UART 生命周期、二进制数据帧、双向握手和目标偏差协议；可直接运行固定信号测试 |
 | `bluetooth_uart.py` | UART2 蓝牙单字符指令接收与缓存，导出 `BluetoothUART` |
 | `color.py` | 彩色光点检测，导出 `ColorSpotDetector` |
 | `road.py` | T/十字主连通轮廓和黑色双排虚线结束符检测，导出 `RoadSymbolDetector` |
+| `line.py` | 红色引导线分带循迹和路口提示，导出 `LineTrackDetector`；直接运行时也是完整循迹程序 |
 | `tangle.py` | 黑框白心方框检测，导出 `RectangleDetector`；直接运行时也是完整追踪程序 |
 | `pencil_rectangle.py` | 细铅笔线方框检测，导出 `PencilRectangleDetector`；多重方框中选择估算边框最细者 |
 | `corner_cycle.py` | 独立的方框四角顺时针停留、移动和串口输出应用 |
 | `num.py` | 打印数字检测，导出 `DigitDetector`；直接运行时也是完整识别程序 |
+| `capture.py` | 按需拍照并保存到 TF 卡，导出 `CaptureService`；直接运行时等待 CAPTURE 帧并存图 |
 
 原 `rectangle_detector.py` 已合并进 `tangle.py`，不再需要上传。
 
@@ -26,6 +31,7 @@
 ```python
 from color import ColorSpotDetector
 from road import RoadSymbolDetector
+from line import LineTrackDetector
 from tangle import RectangleDetector
 from pencil_rectangle import PencilRectangleDetector
 from num import DigitDetector
@@ -33,6 +39,7 @@ from num import DigitDetector
 # 主循环外初始化一次。数字模板也只会在这里加载一次。
 color_detector = ColorSpotDetector()
 road_detector = RoadSymbolDetector()
+line_detector = LineTrackDetector()
 rectangle_detector = RectangleDetector()
 pencil_rectangle_detector = PencilRectangleDetector()
 digit_detector = DigitDetector()
@@ -40,6 +47,7 @@ digit_detector = DigitDetector()
 # 获取 frame 后调用；process 默认会在 frame 上绘图。
 spot = color_detector.process(frame)
 road_result = road_detector.process(frame)
+line_result = line_detector.process(frame)
 rectangle = rectangle_detector.process(frame)
 pencil_rectangle = pencil_rectangle_detector.process(frame)
 digit_result = digit_detector.process(frame)
@@ -95,6 +103,92 @@ DISPLAY_TARGET = DISPLAY_TARGET_IDE      # CanMV IDE 虚拟显示
 ```
 
 板载屏幕和 IDE 的分辨率、位置、帧率、质量参数分别由 `config.py` 中的 `BOARD_DISPLAY_...` 和 `IDE_DISPLAY_...` 管理。它们是所有摄像头程序共享的显示配置，不再与 `tangle.py` 或 `num.py` 绑定；`steelball_detect.py` 也读取同一个 `DISPLAY_TARGET`。需要临时覆盖时仍然可以写 `CameraIO(display_target=DISPLAY_TARGET_BOARD)` 或 `CameraIO(display_target=DISPLAY_TARGET_IDE)`。当前摄像头同时启用水平镜像和垂直翻转，等效于旋转 180°。
+
+## Wi-Fi RTSP 标注画面推流
+
+`wifi_rtsp.py` 使用 CanMV 固件内置的 `network.WLAN`、Display writeback 和 K230 硬件 H.264 VENC，把 `CameraIO.show_image()` 的最终显示画面推到局域网。检测框、文字、状态和 FPS 已经画在 Display 上，因此网页画面与原 IDE 画面内容一致并包含全部批注。
+
+实板验证发现 VS Code IDE Preview 与 WBC RTSP 同时消费 Display writeback 会在运行约一分钟后卡住媒体管线。因此 `WIFI_RTSP_ENABLED = True` 时，默认由 `WIFI_RTSP_EXCLUSIVE_DISPLAY = True` 切换到板载 ST7701 显示路径并关闭 IDE Preview，只保留一条 WBC 消费链；RTSP 关闭或启动失败时恢复原来的 IDE Preview。这是当前固件下的稳定性保护，不是网页限制。
+
+项目内 `safe_wbc_rtsp.py` 保持官方协议参数：
+
+- H.264、无音频、约 2048 kbps。
+- 端口 `8554`、会话名 `test`。
+- 当前 Display 的实际宽高；默认 RTSP 独占模式使用板载 `800x480`，其中 `640x480` 识别画面居中显示。
+
+### 配置热点
+
+复制示例文件：
+
+```text
+wifi_secrets.example.py -> wifi_secrets.py
+```
+
+填写 2.4 GHz 热点：
+
+```python
+WIFI_SSID = "your-2.4g-hotspot"
+WIFI_PASSWORD = "your-hotspot-password"
+```
+
+`wifi_secrets.py` 已加入 `.gitignore`，不要提交真实密码。把它和 `safe_wbc_rtsp.py`、`wifi_rtsp.py`、`camera_io.py`、`config.py` 一起上传到 `/sdcard/K230`。
+在 `config.py` 中开启：
+
+```python
+WIFI_RTSP_ENABLED = True
+WIFI_RTSP_REQUIRED = False
+WIFI_RTSP_EXCLUSIVE_DISPLAY = True
+```
+
+现有检测程序不需要改主循环。任一程序创建并初始化 `CameraIO` 后会自动尝试连接热点；成功时终端打印类似：
+
+```text
+Wi-Fi RTSP started: rtsp://192.168.137.25:8554/test
+```
+
+电脑连接同一热点后，可以双击 `local_rtsp_viewer/start_viewer.bat`，在仅本机开放的网页中输入该地址。查看器全局只维护一个 FFmpeg 上游，重复点击不会累积 K230 连接，10 秒没有首帧会显示具体错误。
+
+也可以在 VLC 的“打开网络串流”或 ffplay 中打开该地址：
+
+```powershell
+ffplay -fflags nobuffer -flags low_delay rtsp://192.168.137.25:8554/test
+```
+
+### 失败降级
+
+默认 `WIFI_RTSP_REQUIRED = False`。缺少 `wifi_secrets.py`、固件媒体依赖不完整、密码错误、连接超时、DHCP 失败或 RTSP 启动失败时，终端会打印以 `Wi-Fi RTSP unavailable; continuing:` 开头的消息。若失败发生在媒体启动前，直接使用原 IDE Preview；若发生在 Display 初始化后，`CameraIO` 会释放第一次媒体资源并以原 IDE 模式重新初始化。
+
+`safe_wbc_rtsp.py` 对 `SendFrame`、`GetStream` 和 RTSP 发送都使用有限超时，并把停止等待限制为 2 秒。如果工作线程仍未退出，它不会继续销毁 Display/MediaManager，而会报告必须断电重启，避免再次运行时访问已经释放的媒体对象。
+
+只有专用程序明确要求“没有 RTSP 就不能运行”时才设为：
+
+```python
+WIFI_RTSP_REQUIRED = True
+```
+
+### 固件能力检查
+
+如果终端报告缺少模块，可在板端 REPL 检查：
+
+```python
+import network
+import multimedia
+from media.vencoder import Encoder, ChnAttrStr, StreamData
+from _media import Display
+print("WLAN/RTSP/VENC available")
+```
+
+缺少任一模块时需要升级到包含无线网络、Display writeback、VENC 和 RTSP server 的 CanMV K230 固件。不要从其他固件复制 `_media`、`mpp` 或 VENC 二进制模块。
+
+### 帧率与温升验证
+
+RTSP 使用硬件 H.264 编码，但 WBC、内存搬运和 Wi-Fi 仍会增加负载。安全实现默认约 20 FPS 编码节奏，优先保证检测主循环和可停止性。部署前对同一个算法分别连续运行至少 10 分钟：
+
+1. `WIFI_RTSP_ENABLED = False`，记录平均 FPS 和温度。
+2. `WIFI_RTSP_ENABLED = True`，连接电脑播放器后记录平均 FPS 和温度。
+3. 记录实际降幅、网页帧率和温度；不同固件、热点与算法负载会有明显差异，不再假定固定 10% 降幅。
+
+RTSP 开启时 IDE Preview 会自动关闭，以避免同一 Display writeback 被双路消费。终端文字输出仍保留；网页看到的是同一张经过 `show_image()` 的最终标注画面。关闭 RTSP 后无需改主程序，IDE Preview 按原配置恢复。
 
 ## 彩色光点模块
 
@@ -216,6 +310,206 @@ if result is not None:
 可直接运行 `road.py` 调用 `run_road_demo()`。演示默认读取 `config.py` 中的 `DISPLAY_TARGET`，并在显示前绘制当前主循环 FPS。
 
 当前实拍目录回归结果：T 全部文件 `50/50`、按内容去重 `17/17`；十字全部文件 `14/14`、去重 `11/11`；结束符全部文件 `5/5`、去重 `4/4`。全部回归均在默认 `320×240` 内部检测分辨率下完成。
+
+## 红线巡线模块
+
+`line.py` 面向 2021 年电赛 F 题的红色引导线。它把画面下部切成 5 条水平带，每条带
+内求出红线的横向位置，等效于一列沿前进方向排开的虚拟灰度传感器：最近一条带给
+单片机做 PID，最远一条带提供弯道和路口的前瞻。
+
+它与 `road.py` 分工不同，不能互相替代：`road.py` 用绿色通道 Otsu 把红色和黑色
+**合并**为前景，用于识别 T/十字/END 的整体结构；巡线必须把红线和黑色数字纸、黑色
+墙线**分开**，因此使用 RGB 通道差分。
+
+```python
+from line import LineTrackDetector
+
+# 主循环外初始化一次。
+line_detector = LineTrackDetector()
+
+# frame 为 RGB 图像；默认同时绘制识别结果。
+result = line_detector.process(frame)
+
+if result is not None:
+    near_offset = result["offsets"][0]
+    junction = result["junction"]
+```
+
+红色判据为三个通道的关系，不做 HSV 转换：
+
+```text
+红 = (R - G > LINE_RED_MIN_DIFF) 且 (R - B > LINE_RED_MIN_DIFF) 且 (R > LINE_RED_MIN_VALUE)
+```
+
+黑线和白布的 `R-G` 都接近 0，只有红色的差值很大。默认阈值由 `pic/line` 的 29 张
+实拍图标定：红线像素的 `R-G` 第 1 百分位为 61，非红像素的第 99 百分位为 0，
+阈值 50 落在这段空白区间中间。
+
+检测流程为：
+
+```text
+裁剪画面下部 → 缩放一次到 160x60 → 通道差分掩膜 → 逐带列投影 → run 提取 → 路口判定
+```
+
+「列投影」指沿竖直方向把一条带的 12 行求和压成 1 行，得到 160 个数，第 `i` 个数
+是第 `i` 列中红色像素的个数，索引即 x 坐标。取连续列段（run）的中心作为红线位置，
+不使用整行质心：路口横线会把质心拽偏，run 不会。
+
+扫描使用两个阈值。主线基本竖直，会填满整条带的 12 行，列计数接近 12；路口横线只
+占带内很少几行，列计数只有 3~5。因此高阈值提取的 run 不会把横线并进主线，主线
+中心在路口不会被带偏；低阈值只用来测量红色向左右延伸到哪里，供分支判定使用。
+
+多个 run 时，最近一条带选最靠近画面中心的，其余各带选中心最接近上一条带的那个。
+近带锚定主线，横向分支抢不走远带。
+
+统一返回字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `center_x`, `center_y` | 最近一条有效带的红线中心 |
+| `offsets` | 5 条带的偏差元组，`画面中心X - 带中心X`，单位为原图像素 |
+| `band_valid` | 5 条带各自是否检测到主线 |
+| `valid_band_count` | 有效带数量 |
+| `bands` | 每条带的完整信息，含 `runs`、`mass_ratio`、`edge_first/edge_last` |
+| `confidence` | 有效带比例与带间连续性的加权分数，范围 `0..1`，不能与其他检测器横向比较 |
+| `mass_ratio` | 逐带红色超量比的最大值，路口判定的主判据 |
+| `junction_flags` | 路口状态位 |
+| `junction` | `junction_flags` 的 bit0 是否置位 |
+| `junction_band` | 超量比最大的带序号，可粗略反映路口距离 |
+| `roi_top`, `roi_bottom` | 本帧检测区域在原图中的上下边界 |
+
+`junction_flags` 的位定义：
+
+| 位 | 含义 |
+| --- | --- |
+| bit0 | 接近路口 |
+| bit1 | 左侧存在分支 |
+| bit2 | 右侧存在分支 |
+| bit3 | 丢线 |
+
+路口判定不额外调用 `RoadSymbolDetector`，只复用已有的列投影统计：
+
+```text
+预期红量 = 各带主线 run 宽度的中位数 x 带高
+逐带超量比 = 该带红色像素数 / 预期红量
+```
+
+比值必须**逐带取最大**，不能把 5 条带加总——横线通常只落在一到两条带里，求和会
+把它稀释掉。该判据不受横线倾斜影响（横线无论多斜都要横穿整个视野，斜只是把红色
+像素重新分配到不同的带），也不会把弯道误判成路口（弯道时主线自身变宽，分子分母
+一起变大，比值仍在 1 附近）。
+
+统计异常带时**不要求该带有主线**：T 型路口横线所在的那条带主线已经到头，带内只剩
+横穿的红色，这正是最典型的路口带。左右分支要在所有超量带上累计，因为倾斜的横线
+会被带边界切成两段落进相邻两条带。
+
+主要调参项：
+
+| 参数 | 默认值 | 含义 |
+| --- | ---: | --- |
+| `LINE_ROI_TOP_RATIO` | `0.32` | 检测区域上沿占画面高度比例 |
+| `LINE_DETECT_WIDTH` | `160` | 检测区域缩放后的宽度 |
+| `LINE_BAND_COUNT` | `5` | 水平带数量，带间无空隙 |
+| `LINE_BAND_HEIGHT` | `12` | 每条带缩放后的行数 |
+| `LINE_RED_MIN_DIFF` | `50` | `R-G` 和 `R-B` 的最小差值 |
+| `LINE_RED_MIN_VALUE` | `70` | 红色像素的最低 R 通道值 |
+| `LINE_MAIN_MIN_COLUMN_COUNT` | `8` | 提取主线 run 的列计数阈值 |
+| `LINE_EDGE_MIN_COLUMN_COUNT` | `2` | 测量红色横向范围的列计数阈值 |
+| `LINE_RUN_MAX_GAP` | `2` | run 内允许合并的空列间隔 |
+| `LINE_MIN_VALID_BANDS` | `2` | 低于该有效带数时返回 `None` |
+| `LINE_JUNCTION_MASS_RATIO` | `1.50` | 判为路口的红色超量比 |
+| `LINE_JUNCTION_CONFIRM_FRAMES` | `3` | 主程序切数字识别的连续确认帧数 |
+| `LINE_DRAW_DATA_OVERLAY` | `True` | 画面左上角的数据块，上车应关 |
+| `LINE_DRAW_BAND_LABELS` | `True` | 每条带旁边的偏差标注，上车应关 |
+| `LINE_DEMO_PRINT_INTERVAL` | `30` | 终端打印数据的帧间隔，`0` 为关闭 |
+
+`LINE_JUNCTION_MASS_RATIO` 的默认值来自实拍标定，三类场景完全分开：直道
+`1.00~1.22`、终点 `1.05~1.35`、路口 `1.77~6.06`，阈值 `1.50` 落在空隙中间。在
+29 张实拍图上路口召回 `25/25`，终点误报 `0/4`，直道误报 `0/29`。
+
+### 缩放方式不要改回 INTER_AREA
+
+`detect()` 使用 `INTER_LINEAR`。`INTER_AREA` 的开销由**源像素数**决定，它会把整个
+检测区域读一遍做面积平均，实测比 `INTER_LINEAR` 慢 15 倍以上，会把只取画面下部
+省下的时间全部抵消掉。红线有 50 像素以上宽，通道差分阈值又极具选择性，缩放时的
+抗锯齿没有实际价值。改动这一行前请先测帧率。
+
+同理，列投影结果在遍历前会先 `tolist()`。逐个索引数组元素每次都要装箱，实测比先
+转列表慢约 3 倍，在解释执行的板端差距只会更大。
+
+### 列投影不要改用 cv2.reduce
+
+CanMV 固件上的精简版 OpenCV **没有 `cv2.reduce`**，用了会在上板运行时抛
+`AttributeError: 'module' object has no attribute 'reduce'`。列投影使用
+`np.sum(band_mask, axis=0)`，它在桌面上也比 `cv2.reduce` 更快。构造函数会探测一次
+当前固件是否支持 `axis` 参数并缓存结果，不支持时退回逐行相加，两条路径结果一致。
+
+板端使用精简版 OpenCV，新增代码前应确认所用函数在其他模块中已经出现过。当前已经
+在板上验证可用的有：`resize`、`split`、`subtract`、`threshold`、`bitwise_and`、
+`countNonZero`、`line`、`circle`、`putText`、`inRange`、`morphologyEx`、
+`findContours`、`contourArea`、`boundingRect`、`moments`、`drawContours`、
+`rectangle`、`getStructuringElement`。
+
+### 直接运行
+
+```python
+import line
+
+line.run_line_demo()
+```
+
+默认在 IDE 画面上叠加本帧的全部关键数据：
+
+```text
+b0..b4  +176  +174  +170  +166  +164      <- 五条带的偏差，无效带显示 --
+mass 3.30 @b4   conf 0.99   bands 5/5     <- 超量比及其所在带、置信度、有效带数
+flags 07  JUNC L R                        <- 路口标志位及其展开文本
+```
+
+同时在每条带的中心点旁边标出该带自己的偏差（如 `b2 +170`），有效带用绿色、无效带
+用红色，一眼看出哪条带偏多少、哪条带丢了线。贴近画面右边界时标注自动改到点的左侧。
+丢线帧显示 `LINE LOST  valid=0`。
+
+判为路口时，会用洋红色在**横线所在的那条带**上画出红色的实际横向范围，两端各加一段
+竖线标出延伸到哪里，并标注 `JUNCTION b4`。这一层属于几何层，**不受 `draw_data`
+控制**：路口是本模块的主要输出之一，上车后仍然需要一眼确认它标在画面的哪个位置。
+
+终端每 `LINE_DEMO_PRINT_INTERVAL` 帧打印同一份数据，格式由 `format_result()` 生成，
+画面和终端共用：
+
+```text
+b[+176 +174 +170 +166 +164]  mass 3.30@b4  conf 0.99  bands 5/5  JUNC L R
+```
+
+**实际上车应该关掉叠加层。** 它每帧要多做八次 `putText`，实测占检测加绘制总耗时的
+约 30%（0.060 ms / 0.198 ms）：
+
+```python
+line.run_line_demo(draw_data=False)      # 关掉画面数据和带标注
+line.run_line_demo(print_interval=0)     # 关掉终端打印
+```
+
+作为模块使用时通过构造函数控制，两个开关互相独立：
+
+```python
+line_detector = LineTrackDetector(draw_data=False, draw_band_labels=False)
+```
+
+`enable_uart` 默认为 `False`，只做视觉和显示，方便单独调参。需要发送 LINE 帧时
+显式开启：
+
+```python
+line.run_line_demo(enable_uart=True)
+```
+
+开启后会先创建 `TrackingUART` 并阻塞等待握手。**该等待没有超时**：单片机没接或
+没在跑时，程序会停在握手上，画面不会出现。默认关闭就是为了避免把这种情况误认为
+程序崩溃。
+
+主循环用 `JunctionConfirmState` 做连续帧确认，`junction` 连续 `3` 帧成立后进入切换
+数字识别的分支。该分支目前是 `TODO`，只在画面上显示 `JUNCTION`，接入 `num.py` 的
+位置已经标出。`JunctionConfirmState` 只服务于状态切换，不属于检测器，也不会把历史
+结果当成当前帧的检测结果发送。
 
 ## 方框检测模块
 
@@ -455,6 +749,101 @@ digit_detector = DigitDetector(template_dir="_digit_templates")
 - `shape_distance`：与最终数字模板轮廓的形状距离，越小越相似；不支持形状匹配时为 `None`。
 - `center_x`、`center_y`、`x`、`y`、`w`、`h`、`bbox`、`area`：位置和轮廓信息。
 
+## 拍照存图模块
+
+`capture.py` 导出 `CaptureService`，收到 MSPM0 发来的 CAPTURE 帧（`TYPE=0x20`）后，在主循环的下一帧把当前画面保存到 TF 卡，然后回一个 `CAPTURE_ACK` 帧（`TYPE=0x21`）。照片不通过串口回传，事后拔卡拷贝。
+
+### 固件限制与存图实现（上板实测结论，勿改）
+
+在真实 K230 板子上以 rgb888（640x480）格式实测，`image.save()` 的两种调用方式均失败：
+
+```
+image.save(path, quality=95)  -> OSError: current format not support save function!
+image.save(path)              -> OSError: current format not support save function!
+```
+
+**该固件的 `image.save()` 不支持 rgb888 格式**，无论是否传 quality 参数，结果一致。唯一可用路径是 `image.compressed(quality=...)` 返回 JPEG 字节后自行写文件，实测返回正常 JPEG 数据（54969 字节）。
+
+因此 `save()` 的实现为：先调 `image.compressed(quality=...)` 取字节，再用 `open(path, "wb")` 写文件。部分固件的 `compressed()` 不接受 quality 关键字时退回无参调用。
+
+**失败时的行为**：若 `compressed()` 抛异常或写文件失败，会尝试 `os.remove(path)` 删除可能残留的半截文件（`open()` 成功但 `write()` 中途失败时会产生半截文件，不删则下次扫描会把它计入编号，留下打不开的坏图），然后返回 `None`，并且不推进 `_next_index`，让下一次尝试重用同一个编号。
+
+**不要把实现改回 `image.save()`**——该固件对 rgb888 图像调用 `image.save()` 必然报 `current format not support save function!`，这是上板实测得出的结论，不是推测。
+
+### 公共方法
+
+| 方法 | 说明 |
+| --- | --- |
+| `__init__(save_dir, prefix, suffix, quality, max_pending)` | 构造并扫描已有文件，确定下一个编号，不启动任何硬件 |
+| `handle_frames(frames)` | 从 `poll()` 的返回值中过滤 `0x20` 帧，累加待拍张数，返回本次新增张数 |
+| `update(image)` | 主循环每帧调用；有待拍时保存一张，返回 `(saved_count, last_index)`；无待拍返回 `(0, 0)` |
+| `save(image)` | 保存一张到 `save_dir/prefix_NNNN.suffix`，返回本张编号；失败返回 `None` |
+
+### 属性
+
+| 属性 | 说明 |
+| --- | --- |
+| `pending` | 当前待拍张数（只读） |
+| `next_index` | 下一张照片的编号（只读） |
+
+### 与 `poll()` 配合的用法示例
+
+```python
+from capture import CaptureService
+from uart_io import TrackingUART
+from camera_io import CameraIO, DISPLAY_TARGET_IDE
+from config import CAPTURE_MESSAGE_ACK
+
+service = CaptureService()
+camera = CameraIO(display_target=DISPLAY_TARGET_IDE).initialize()
+tracking_uart = TrackingUART().initialize()
+tracking_uart.wait_for_handshake()
+
+while True:
+    image = camera.snapshot()
+    frames = tracking_uart.poll()
+    service.handle_frames(frames)
+    saved, last_index = service.update(image)
+    if saved > 0:
+        tracking_uart.send_frame(
+            CAPTURE_MESSAGE_ACK,
+            bytes((1, last_index & 0xFF, (last_index >> 8) & 0xFF)),
+        )
+    camera.show_image(image)
+```
+
+### 冷启动预热（上板实测结论，勿省）
+
+sensor 初始化完成后，自动曝光算法尚未收敛，最初若干帧是全黑图像。实测初始化后立刻调用 `snapshot()` 保存，得到的是全黑文件；预热 30 帧后保存，颜色正常。
+
+`run_capture_demo()` 在握手之前先空跑 `CAPTURE_WARMUP_FRAMES` 帧：
+
+```python
+for _ in range(warmup_frames):
+    camera.snapshot()
+```
+
+**预热放在握手前**：握手是 K230 向 MSPM0 宣告"我已就绪"的信号。若握手在预热后发出，MSPM0 收到 READY_ACK 时 sensor 已经收敛，第一张 CAPTURE 请求不会拍到黑图。若颠倒顺序，MSPM0 可能在 sensor 尚未收敛时立即发出 CAPTURE，导致存下黑图。
+
+**不要删掉这段预热**——这是 K230 sensor 的固有行为，不是代码冗余。
+
+### `to_numpy_ref()` 通道顺序（上板实测结论，勿改）
+
+`image.to_numpy_ref()` 返回的 numpy 数组是 **RGB** 通道顺序，而 `cv2.imwrite` 期望 **BGR**。若直接将该数组传给 `cv2.imwrite`，存出来的图像红蓝互换。如需走 cv2 写图，必须先 `cvtColor(frame, cv2.COLOR_RGB2BGR)`。存图路径（`CaptureService.save()`）已改用 `image.compressed()` 绕过此问题，无需 `to_numpy_ref()`。
+
+### `CAPTURE_` 参数表
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `CAPTURE_SAVE_DIR` | `/sdcard/pic` | TF 卡照片保存目录 |
+| `CAPTURE_FILE_PREFIX` | `cap` | 文件名前缀 |
+| `CAPTURE_FILE_SUFFIX` | `.jpg` | 文件扩展名 |
+| `CAPTURE_JPEG_QUALITY` | `95` | JPEG 保存质量（0–100） |
+| `CAPTURE_MAX_PENDING` | `20` | 单次最多累积的待拍张数上限 |
+| `CAPTURE_MESSAGE_REQUEST` | `0x20` | MSPM0 发来的拍照请求帧 TYPE |
+| `CAPTURE_MESSAGE_ACK` | `0x21` | K230 回复的拍照确认帧 TYPE |
+| `CAPTURE_WARMUP_FRAMES` | `30` | 初始化后空跑帧数，等待自动曝光收敛（实测前若干帧全黑） |
+
 ## 串口模块
 
 `uart_io.py` 导出 `TrackingUART`。默认配置是：
@@ -521,7 +910,7 @@ AA 55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
 | --- | ---: | --- |
 | `AA 55` | 2 | 固定帧头，用于丢字节后重新同步 |
 | `VER` | 1 | 协议版本，当前为 `0x01` |
-| `TYPE` | 1 | `READY=0x01`、`READY_ACK=0x02`、`TARGET=0x10` |
+| `TYPE` | 1 | `READY=0x01`、`READY_ACK=0x02`、`TARGET=0x10`、`LINE=0x11` |
 | `SEQ` | 1 | 帧序号，达到 255 后回到 0 |
 | `LEN` | 1 | PAYLOAD 长度，当前最大 32 |
 | `PAYLOAD` | LEN | 消息数据 |
@@ -543,6 +932,47 @@ tracking_uart.send_target(
     frame_id=frame_count,
 )
 ```
+
+巡线使用独立的 LINE 帧，`TYPE` 为 `0x11`，PAYLOAD 定长 12 字节，整帧 19 字节：
+
+```text
+valid:u8 | b0:int16_LE | b1:int16_LE | b2:int16_LE | b3:int16_LE | b4:int16_LE
+        | junction_flags:u8
+```
+
+`b0` 最近、`b4` 最远，单位为原图像素，符号与 TARGET 一致。直接把检测器本帧的返回
+值传进去，不需要自己拆字段：
+
+```python
+from line import LineTrackDetector
+from uart_io import TrackingUART
+
+line_detector = LineTrackDetector()
+tracking_uart = TrackingUART().initialize()
+tracking_uart.wait_for_handshake()
+
+result = line_detector.process(frame)
+tracking_uart.send_line(result)
+```
+
+`result` 为 `None` 时会发送 `valid=0`、五个偏差全 0、`junction_flags` 置 bit3 的
+丢线帧。和 TARGET 一样，这里的 `0` 只是无效占位值，单片机必须走丢线保护逻辑，
+不能把它当成「红线位于画面中心」喂给 PID。
+
+单片机侧只需要在现有解析循环里加一个分支，握手和 TARGET 都不用改：
+
+```c
+case 0x11:                                          /* LINE */
+    valid = payload[0];
+    for (int i = 0; i < 5; i++) {
+        offset[i] = (int16_t)(payload[1 + i * 2] |
+                              (payload[2 + i * 2] << 8));
+    }
+    junction_flags = payload[11];
+    break;
+```
+
+`UART_MESSAGE_DIGIT = 0x12` 已经预留给后续的病房号上报，当前未实现。
 
 临时修改串口参数不需要改 `config.py`：
 
@@ -616,6 +1046,21 @@ elif command == "p":
 
 `available()` 会先读取 UART，再返回缓存中的指令数量；`clear()` 同时清空软件缓存和当前 UART 残留数据。追踪串口使用 UART1（GPIO3/4），蓝牙接收使用 UART2（GPIO11/12），两者可以同时工作。程序退出时应调用 `deinitialize()`。
 
+## 板端模块导入路径
+
+CanMV 按绝对路径启动脚本时，不会把脚本所在目录加入 `sys.path`，`import config`
+会失败。所有导入 `config` 的模块都在导入前补上了板端目录：
+
+```python
+import sys
+
+if "/sdcard/K230" not in sys.path:
+    sys.path.append("/sdcard/K230")
+```
+
+这段必须放在 `from config import ...` **之前**，路径先就位才能导入。重复导入模块
+不会重复追加。模块实际存放位置不是 `/sdcard/K230` 时，需要同步修改这个字面量。
+
 ## 参数管理规则
 
 模块默认参数统一放在 `config.py`，分为公共参数和程序特有参数。
@@ -630,6 +1075,7 @@ elif command == "p":
 
 - `COLOR_...`：彩色光点。
 - `ROAD_...`：T/十字主轮廓和黑色双排虚线结束符。
+- `LINE_...`：红线分带循迹和路口判定。
 - `RECTANGLE_...`：方框。
 - `TANGLE_...`：方框追踪演示的打印、回收和绘制参数。
 - `CORNER_CYCLE_...`：四角轨迹的停留、移动、串口周期和绘制参数。
@@ -708,6 +1154,14 @@ class MyTargetDetector:
 
 ## 上传到 K230
 
+Wi-Fi RTSP 标注画面推流还需要：
+
+- `wifi_rtsp.py`
+- `safe_wbc_rtsp.py`
+- `wifi_secrets.py`（由示例复制并填写，不提交 Git）
+- `camera_io.py`
+- `config.py`
+
 彩色光点功能至少需要：
 
 - `color.py`
@@ -721,6 +1175,14 @@ class MyTargetDetector:
 - `config.py`
 
 直接运行 `road.py` 的摄像头演示还需要 `camera_io.py`。
+
+红线巡线功能至少需要：
+
+- `line.py`
+- `config.py`
+
+直接运行 `line.py` 的循迹主程序还需要 `camera_io.py` 和 `uart_io.py`；
+传入 `enable_uart=False` 时不需要 `uart_io.py`。
 
 方框功能至少需要：
 
@@ -762,5 +1224,13 @@ class MyTargetDetector:
 - `config.py`
 - 数字模板目录及 `0.png` 到 `9.png`
 - `camera_io.py`（仅直接运行完整摄像头示例需要）
+
+拍照存图功能至少需要：
+
+- `capture.py`
+- `config.py`
+
+直接运行 `capture.py` 的存图主程序还需要 `camera_io.py` 和 `uart_io.py`；
+传入 `enable_uart=False` 时不需要 `uart_io.py`。
 
 作为模块导入时，调用方自行负责摄像头、显示和串口生命周期。

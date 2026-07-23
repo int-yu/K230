@@ -8,3 +8,4 @@ pic/
 !.env.example
 .ssh/
 .ssh_known_hosts
+wifi_secrets.py
