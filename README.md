@@ -74,9 +74,10 @@ if result is not None:
 `CameraIO` 统一管理 `Sensor`、`Display` 和 `MediaManager`。构造时选择板载屏幕或 CanMV IDE，初始化和释放各调用一次：
 
 ```python
-from camera_io import CameraIO, DISPLAY_TARGET_BOARD, DISPLAY_TARGET_IDE
+from camera_io import CameraIO
 
-camera = CameraIO(display_target=DISPLAY_TARGET_IDE).initialize()
+# 默认读取 config.py 中的 DISPLAY_TARGET。
+camera = CameraIO().initialize()
 
 try:
     image = camera.snapshot()
@@ -86,7 +87,14 @@ finally:
     camera.deinitialize()
 ```
 
-板载屏幕和 IDE 的分辨率、位置、帧率、质量参数分别由 `config.py` 中的 `BOARD_DISPLAY_...` 和 `IDE_DISPLAY_...` 管理。它们是所有摄像头程序共享的显示配置，不再与 `tangle.py` 或 `num.py` 绑定。当前摄像头同时启用水平镜像和垂直翻转，等效于旋转 180°。
+默认显示目标由 `config.py` 中的一行统一控制：
+
+```python
+DISPLAY_TARGET = DISPLAY_TARGET_IDE      # CanMV IDE 虚拟显示
+# DISPLAY_TARGET = DISPLAY_TARGET_BOARD  # K230 板载屏幕
+```
+
+板载屏幕和 IDE 的分辨率、位置、帧率、质量参数分别由 `config.py` 中的 `BOARD_DISPLAY_...` 和 `IDE_DISPLAY_...` 管理。它们是所有摄像头程序共享的显示配置，不再与 `tangle.py` 或 `num.py` 绑定；`steelball_detect.py` 也读取同一个 `DISPLAY_TARGET`。需要临时覆盖时仍然可以写 `CameraIO(display_target=DISPLAY_TARGET_BOARD)` 或 `CameraIO(display_target=DISPLAY_TARGET_IDE)`。当前摄像头同时启用水平镜像和垂直翻转，等效于旋转 180°。
 
 ## 彩色光点模块
 
@@ -205,7 +213,7 @@ if result is not None:
 | `ROAD_PATH_CORRIDOR_HALF_WIDTH_RATIO` | `0.12` | END 中央路径搜索走廊半宽，占画面宽度比例 |
 | `ROAD_END_MIN_PATH_LENGTH_RATIO` | `0.12` | END 返回 `near/terminal` 所需的最小向下路径长度 |
 
-可直接运行 `road.py` 调用 `run_road_demo()`。演示使用 `CameraIO(display_target=DISPLAY_TARGET_IDE)`，并在送入 IDE 显示前绘制当前主循环 FPS。
+可直接运行 `road.py` 调用 `run_road_demo()`。演示默认读取 `config.py` 中的 `DISPLAY_TARGET`，并在显示前绘制当前主循环 FPS。
 
 当前实拍目录回归结果：T 全部文件 `50/50`、按内容去重 `17/17`；十字全部文件 `14/14`、去重 `11/11`；结束符全部文件 `5/5`、去重 `4/4`。全部回归均在默认 `320×240` 内部检测分辨率下完成。
 

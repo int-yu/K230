@@ -826,7 +826,7 @@ def run_rectangle_tracking():
     import gc
     import sys
 
-    from camera_io import CameraIO, DISPLAY_TARGET_IDE
+    from camera_io import CameraIO
     from color import ColorSpotDetector
     from uart_io import TrackingUART
 
@@ -856,7 +856,7 @@ def run_rectangle_tracking():
         hold_state = TargetHoldState(RECTANGLE_LOST_FRAME_LIMIT)
 
         print("初始化 CSI2 摄像头")
-        camera = CameraIO(display_target=DISPLAY_TARGET_IDE)
+        camera = CameraIO()
         camera.initialize()
 
         clock = time.clock()

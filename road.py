@@ -994,15 +994,16 @@ class RoadSymbolDetector:
 
 
 def run_road_demo(display_target=None):
-    """使用 CameraIO 和 CanMV IDE 显示运行寻路符号演示。"""
+    """使用 CameraIO 按统一显示目标运行寻路符号演示。"""
     import gc
     import sys
     import time
 
-    from camera_io import CameraIO, DISPLAY_TARGET_IDE
+    from camera_io import CameraIO
 
     if display_target is None:
-        display_target = DISPLAY_TARGET_IDE
+        from config import DISPLAY_TARGET
+        display_target = DISPLAY_TARGET
     camera = None
     detector = RoadSymbolDetector()
     frame_count = 0

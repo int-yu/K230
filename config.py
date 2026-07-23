@@ -46,6 +46,14 @@ UART_HANDSHAKE_POLL_INTERVAL_MS = 10
 DISPLAY_MODE_ST7701 = "st7701"
 DISPLAY_MODE_VIRT = "virt"
 
+DISPLAY_TARGET_BOARD = "board"
+DISPLAY_TARGET_IDE = "ide"
+
+# 统一显示目标开关：
+# - DISPLAY_TARGET_IDE：CanMV IDE 虚拟显示
+# - DISPLAY_TARGET_BOARD：K230 板载屏幕
+DISPLAY_TARGET = DISPLAY_TARGET_IDE
+
 
 # 板载 3.5 寸 ST7701 屏幕，供所有程序的 DISPLAY_TARGET_BOARD 使用。
 BOARD_DISPLAY_MODE = DISPLAY_MODE_ST7701
@@ -369,3 +377,24 @@ DIGIT_DRAW_THICKNESS = 2
 DIGIT_DRAW_SUMMARY = True
 DIGIT_DEMO_PRINT_INTERVAL = 30
 DIGIT_DEMO_GC_INTERVAL = 30
+
+
+# ------------------------------------------------------------
+# 钢球 YOLO11 检测演示（steelball_detect.py）
+# ------------------------------------------------------------
+
+# 上板时把 yolo11n_det_320.kmodel 放到下面任意一个路径。
+STEELBALL_KMODEL_PATH = "/sdcard/yolo11n_det_320.kmodel"
+STEELBALL_KMODEL_PATH_CANDIDATES = (
+    STEELBALL_KMODEL_PATH,
+    "/sdcard/7839/yolo11n_det_320.kmodel",
+)
+
+# 7839 生成的示例模型只有 1 个类别，类别 id 为 0。
+STEELBALL_LABELS = {0: "steelball"}
+STEELBALL_MODEL_INPUT_SIZE = [320, 320]
+STEELBALL_RGB888P_SIZE = [640, 360]
+
+STEELBALL_CONFIDENCE_THRESHOLD = 0.60
+STEELBALL_NMS_THRESHOLD = 0.45
+STEELBALL_MAX_BOXES_NUM = 50

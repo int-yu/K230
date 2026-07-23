@@ -547,10 +547,11 @@ def run_color_tracking(
     import sys
     import time
 
-    from camera_io import CameraIO, DISPLAY_TARGET_IDE
+    from camera_io import CameraIO
 
     if display_target is None:
-        display_target = DISPLAY_TARGET_IDE
+        from config import DISPLAY_TARGET
+        display_target = DISPLAY_TARGET
 
     camera = None
     tracking_uart = None
