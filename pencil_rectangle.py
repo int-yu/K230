@@ -820,7 +820,7 @@ def run_pencil_rectangle_demo(
     import gc
     import sys
 
-    from camera_io import CameraIO, DISPLAY_TARGET_IDE
+    from camera_io import CameraIO
     from corner_cycle import (
         CORNER_HOLD_MS,
         CORNER_MOVE_MS,
@@ -834,7 +834,8 @@ def run_pencil_rectangle_demo(
     from uart_io import TrackingUART
 
     if display_target is None:
-        display_target = DISPLAY_TARGET_IDE
+        from config import DISPLAY_TARGET
+        display_target = DISPLAY_TARGET
     if hold_ms is None:
         hold_ms = CORNER_HOLD_MS
     if move_ms is None:

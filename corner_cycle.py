@@ -272,11 +272,12 @@ def run_corner_cycle(
     uart_send_period_ms=UART_SEND_PERIOD_MS,
 ):
     """运行完整摄像头、显示和四角串口循环应用。"""
-    from camera_io import CameraIO, DISPLAY_TARGET_IDE
+    from camera_io import CameraIO
     from uart_io import TrackingUART
 
     if display_target is None:
-        display_target = DISPLAY_TARGET_IDE
+        from config import DISPLAY_TARGET
+        display_target = DISPLAY_TARGET
 
     camera = None
     tracking_uart = None

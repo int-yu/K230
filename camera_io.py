@@ -30,6 +30,9 @@ from config import (
     CAMERA_SOURCE_HEIGHT,
     CAMERA_SOURCE_WIDTH,
     CAMERA_VFLIP,
+    DISPLAY_TARGET as DEFAULT_DISPLAY_TARGET,
+    DISPLAY_TARGET_BOARD,
+    DISPLAY_TARGET_IDE,
     DISPLAY_MODE_ST7701,
     DISPLAY_MODE_VIRT,
     IDE_DISPLAY_FPS,
@@ -49,20 +52,12 @@ from config import (
 )
 
 
-DISPLAY_TARGET_BOARD = "board"
-DISPLAY_TARGET_IDE = "ide"
-
-
 class CameraIO:
     """统一管理摄像头采集、显示输出和媒体资源。"""
 
-    def __init__(
-        self,
-        display_target=DISPLAY_TARGET_BOARD,
-        enable_rtsp=None,
-        rtsp_required=None,
-        rtsp_service_factory=None,
-    ):
+    def __init__(self, display_target=None):
+        if display_target is None:
+            display_target = DEFAULT_DISPLAY_TARGET
         self.display_target = display_target
         self.enable_rtsp = (
             WIFI_RTSP_ENABLED if enable_rtsp is None else bool(enable_rtsp)

@@ -1015,7 +1015,8 @@ def run_digit_demo():
     """直接运行 num.py 时使用的完整摄像头识别示例。"""
     import sys
 
-    from camera_io import CameraIO, DISPLAY_TARGET_IDE
+    from camera_io import CameraIO
+    from config import DISPLAY_TARGET
 
     camera = None
     detector = None
@@ -1023,11 +1024,11 @@ def run_digit_demo():
         print("================================")
         print("K230 OpenCV打印数字识别")
         print("摄像头：CSI2")
-        print("显示方式：CanMV IDE")
+        print("显示目标：{}".format(DISPLAY_TARGET))
         print("================================")
 
         detector = DigitDetector(verbose=True)
-        camera = CameraIO(display_target=DISPLAY_TARGET_IDE)
+        camera = CameraIO()
         camera.initialize()
         clock = time.clock()
         frame_count = 0

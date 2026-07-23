@@ -46,6 +46,14 @@ UART_HANDSHAKE_POLL_INTERVAL_MS = 10
 DISPLAY_MODE_ST7701 = "st7701"
 DISPLAY_MODE_VIRT = "virt"
 
+DISPLAY_TARGET_BOARD = "board"
+DISPLAY_TARGET_IDE = "ide"
+
+# 统一显示目标开关：
+# - DISPLAY_TARGET_IDE：CanMV IDE 虚拟显示
+# - DISPLAY_TARGET_BOARD：K230 板载屏幕
+DISPLAY_TARGET = DISPLAY_TARGET_IDE
+
 
 # 板载 3.5 寸 ST7701 屏幕，供所有程序的 DISPLAY_TARGET_BOARD 使用。
 BOARD_DISPLAY_MODE = DISPLAY_MODE_ST7701
@@ -372,94 +380,21 @@ DIGIT_DEMO_GC_INTERVAL = 30
 
 
 # ------------------------------------------------------------
-# 红线巡线与演示（line.py）
+# 钢球 YOLO11 检测演示（steelball_detect.py）
 # ------------------------------------------------------------
 
-# 只处理画面下部这一段高度，上部是远景和墙面，对循迹没有贡献。
-# 该区域整体缩放一次，再按行切成若干条水平带。区域之间没有空隙，
-# 水平的路口横线不会掉进带与带的缝里。
-LINE_ROI_TOP_RATIO = 0.32
-LINE_ROI_BOTTOM_RATIO = 1.00
-LINE_DETECT_WIDTH = 160
-LINE_BAND_COUNT = 5
-LINE_BAND_HEIGHT = 12
+# 上板时把 yolo11n_det_320.kmodel 放到下面任意一个路径。
+STEELBALL_KMODEL_PATH = "/sdcard/yolo11n_det_320.kmodel"
+STEELBALL_KMODEL_PATH_CANDIDATES = (
+    STEELBALL_KMODEL_PATH,
+    "/sdcard/7839/yolo11n_det_320.kmodel",
+)
 
-# 红色判据为通道差分，不做 HSV 转换。白布在实拍中偏冷，R-G 为负，
-# 与红线的 R-G 之间有很宽的空白区间。阈值由 pic/line 的实拍图标定。
-LINE_RED_MIN_DIFF = 50
-LINE_RED_MIN_VALUE = 70
+# 7839 生成的示例模型只有 1 个类别，类别 id 为 0。
+STEELBALL_LABELS = {0: "steelball"}
+STEELBALL_MODEL_INPUT_SIZE = [320, 320]
+STEELBALL_RGB888P_SIZE = [640, 360]
 
-# 列投影后的 run 提取。计数单位是带内行数，不是原图像素。
-# 主线基本竖直，会填满整条带的高度；路口横线只占带内很少几行。
-# 两个阈值因此能把主线和横线分开，横线不会把主线中心拽偏。
-# 边缘阈值只用于测量红色向左右延伸到哪里。它必须取得很低：横线压在
-# 带边界上时，在这条带里可能只占一两行，若阈值过高就会计入红色总量
-# 却测不出横向范围，导致判出路口却报不出左右分支。
-LINE_MAIN_MIN_COLUMN_COUNT = 8
-LINE_EDGE_MIN_COLUMN_COUNT = 2
-LINE_RUN_MIN_WIDTH = 2
-LINE_RUN_MAX_GAP = 2
-LINE_RUN_MAX_WIDTH_RATIO = 0.55
-LINE_MIN_VALID_BANDS = 2
-LINE_CONTINUITY_REF_RATIO = 0.25
-
-# 路口判定。主判据是红色总量相对主线预期量的超出倍数，该比值不受
-# 横线倾斜影响，也不会把弯道加宽误判成路口。
-LINE_JUNCTION_MASS_RATIO = 1.50
-LINE_JUNCTION_WIDTH_RATIO = 2.20
-LINE_JUNCTION_MIN_BANDS = 1
-LINE_JUNCTION_SIDE_MIN_OFFSET_RATIO = 0.12
-LINE_JUNCTION_CONFIRM_FRAMES = 3
-
-# 数据叠加层。调试时在 IDE 画面上显示每条带的偏差和路口判据，实际上车
-# 可以整体关掉省下每帧十几次 putText。
-LINE_DRAW_DATA_OVERLAY = True
-LINE_DRAW_BAND_LABELS = True
-LINE_DRAW_DATA_LINE_HEIGHT = 20
-LINE_DRAW_DATA_ORIGIN = (5, 50)
-LINE_DEMO_PRINT_INTERVAL = 30
-
-# 绘制参数。颜色元组直接写入 RGB888 画面。
-LINE_DRAW_BAND_COLOR = (80, 80, 255)
-LINE_DRAW_CENTER_COLOR = (0, 255, 0)
-LINE_DRAW_LOST_COLOR = (255, 0, 0)
-LINE_DRAW_PATH_COLOR = (0, 255, 255)
-LINE_DRAW_JUNCTION_COLOR = (255, 0, 255)
-LINE_DRAW_AXIS_COLOR = (255, 255, 255)
-LINE_DRAW_TEXT_COLOR = (255, 255, 0)
-LINE_DRAW_THICKNESS = 2
-LINE_DRAW_POINT_RADIUS = 5
-LINE_DRAW_FONT_SCALE = 0.55
-LINE_DEMO_GC_INTERVAL = 30
-
-
-# ------------------------------------------------------------
-# 拍照存图（capture.py）
-# ------------------------------------------------------------
-
-CAPTURE_SAVE_DIR = "/sdcard/pic"
-CAPTURE_FILE_PREFIX = "cap"
-CAPTURE_FILE_SUFFIX = ".jpg"
-CAPTURE_JPEG_QUALITY = 95
-CAPTURE_MAX_PENDING = 20
-CAPTURE_MESSAGE_REQUEST = 0x20
-CAPTURE_MESSAGE_ACK = 0x21
-CAPTURE_WARMUP_FRAMES = 30
-
-
-# ------------------------------------------------------------
-# Wi-Fi RTSP 标注画面推流（wifi_rtsp.py）
-# ------------------------------------------------------------
-
-WIFI_RTSP_ENABLED = False
-WIFI_RTSP_REQUIRED = False
-WIFI_RTSP_CONNECT_TIMEOUT_S = 15
-WIFI_RTSP_EXCLUSIVE_DISPLAY = True
-WIFI_RTSP_ENCODE_TIMEOUT_MS = 100
-WIFI_RTSP_STREAM_TIMEOUT_MS = 100
-WIFI_RTSP_SEND_TIMEOUT_MS = 100
-WIFI_RTSP_WRITEBACK_TIMEOUT_MS = 100
-WIFI_RTSP_FRAME_INTERVAL_MS = 50
-WIFI_RTSP_STOP_TIMEOUT_MS = 2000
-WIFI_RTSP_BIT_RATE_KBPS = 2048
-WIFI_RTSP_MAX_EMPTY_FRAMES = 100
+STEELBALL_CONFIDENCE_THRESHOLD = 0.60
+STEELBALL_NMS_THRESHOLD = 0.45
+STEELBALL_MAX_BOXES_NUM = 50
