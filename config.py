@@ -38,6 +38,10 @@ UART_BAUDRATE = 115200
 UART_SEND_PERIOD_MS = 10
 UART_HANDSHAKE_PERIOD_MS = 100
 UART_HANDSHAKE_POLL_INTERVAL_MS = 10
+UART_HANDSHAKE_SKIP_BUTTON_ENABLE = True
+UART_HANDSHAKE_SKIP_BUTTON_PIN = 21
+UART_HANDSHAKE_SKIP_BUTTON_ACTIVE_VALUE = 0
+UART_HANDSHAKE_SKIP_BUTTON_DEBOUNCE_MS = 10
 
 # ------------------------------------------------------------
 # 摄像头显示输出（camera_io.py）
@@ -74,6 +78,26 @@ IDE_DISPLAY_TO_IDE = True
 IDE_DISPLAY_QUALITY = 80
 IDE_DISPLAY_X = 0
 IDE_DISPLAY_Y = 0
+
+
+# ------------------------------------------------------------
+# Wi-Fi RTSP 推流（camera_io.py / wifi_rtsp.py）
+# ------------------------------------------------------------
+
+# 默认关闭，不影响现有 IDE/板载屏显示流程；需要网页/RTSP 预览时手动打开。
+WIFI_RTSP_ENABLED = False
+WIFI_RTSP_REQUIRED = False
+WIFI_RTSP_CONNECT_TIMEOUT_S = 15
+WIFI_RTSP_EXCLUSIVE_DISPLAY = True
+
+WIFI_RTSP_ENCODE_TIMEOUT_MS = 100
+WIFI_RTSP_STREAM_TIMEOUT_MS = 100
+WIFI_RTSP_SEND_TIMEOUT_MS = 100
+WIFI_RTSP_WRITEBACK_TIMEOUT_MS = 100
+WIFI_RTSP_FRAME_INTERVAL_MS = 50
+WIFI_RTSP_STOP_TIMEOUT_MS = 2000
+WIFI_RTSP_BIT_RATE_KBPS = 2048
+WIFI_RTSP_MAX_EMPTY_FRAMES = 100
 
 
 # ============================================================
@@ -264,6 +288,50 @@ COLOR_DEMO_GC_INTERVAL = 30
 
 
 # ------------------------------------------------------------
+# 红线分带巡线与路口检测（line.py）
+# ------------------------------------------------------------
+
+LINE_ROI_TOP_RATIO = 0.32
+LINE_ROI_BOTTOM_RATIO = 1.00
+LINE_DETECT_WIDTH = 160
+LINE_BAND_COUNT = 5
+LINE_BAND_HEIGHT = 12
+
+LINE_RED_MIN_DIFF = 50
+LINE_RED_MIN_VALUE = 70
+LINE_MAIN_MIN_COLUMN_COUNT = 8
+LINE_EDGE_MIN_COLUMN_COUNT = 2
+LINE_RUN_MIN_WIDTH = 2
+LINE_RUN_MAX_GAP = 2
+LINE_RUN_MAX_WIDTH_RATIO = 0.55
+LINE_MIN_VALID_BANDS = 2
+LINE_CONTINUITY_REF_RATIO = 0.25
+
+LINE_JUNCTION_MASS_RATIO = 1.50
+LINE_JUNCTION_WIDTH_RATIO = 2.20
+LINE_JUNCTION_MIN_BANDS = 1
+LINE_JUNCTION_SIDE_MIN_OFFSET_RATIO = 0.12
+LINE_JUNCTION_CONFIRM_FRAMES = 3
+
+LINE_DRAW_DATA_OVERLAY = True
+LINE_DRAW_BAND_LABELS = True
+LINE_DRAW_DATA_LINE_HEIGHT = 20
+LINE_DRAW_DATA_ORIGIN = (5, 50)
+LINE_DRAW_BAND_COLOR = (80, 80, 255)
+LINE_DRAW_CENTER_COLOR = (0, 255, 0)
+LINE_DRAW_LOST_COLOR = (255, 0, 0)
+LINE_DRAW_PATH_COLOR = (0, 255, 255)
+LINE_DRAW_JUNCTION_COLOR = (255, 0, 255)
+LINE_DRAW_AXIS_COLOR = (255, 255, 255)
+LINE_DRAW_TEXT_COLOR = (255, 255, 0)
+LINE_DRAW_THICKNESS = 2
+LINE_DRAW_POINT_RADIUS = 5
+LINE_DRAW_FONT_SCALE = 0.55
+LINE_DEMO_PRINT_INTERVAL = 30
+LINE_DEMO_GC_INTERVAL = 30
+
+
+# ------------------------------------------------------------
 # 寻路符号检测与演示（road.py）
 # ------------------------------------------------------------
 
@@ -332,7 +400,14 @@ ROAD_DEMO_GC_INTERVAL = 30
 DIGIT_TEMPLATE_DIR = "/digit_templates"
 DIGIT_TEMPLATE_DIR_CANDIDATES = (
     DIGIT_TEMPLATE_DIR,
+    "/assets/_digit_templates",
+    "/assets/digit_templates",
     "/sdcard/digit_templates",
+    "/sdcard/_digit_templates",
+    "/sdcard/assets/_digit_templates",
+    "/sdcard/assets/digit_templates",
+    "/sdcard/K230/assets/_digit_templates",
+    "/sdcard/K230/assets/digit_templates",
 )
 
 DIGIT_NORMALIZED_WIDTH = 48
@@ -388,6 +463,9 @@ STEELBALL_KMODEL_PATH = "/sdcard/yolo11n_det_320.kmodel"
 STEELBALL_KMODEL_PATH_CANDIDATES = (
     STEELBALL_KMODEL_PATH,
     "/sdcard/7839/yolo11n_det_320.kmodel",
+    "/sdcard/assets/model/yolo11n_det_320.kmodel",
+    "/sdcard/K230/assets/model/yolo11n_det_320.kmodel",
+    "/assets/model/yolo11n_det_320.kmodel",
 )
 
 # 7839 生成的示例模型只有 1 个类别，类别 id 为 0。
@@ -398,3 +476,17 @@ STEELBALL_RGB888P_SIZE = [640, 360]
 STEELBALL_CONFIDENCE_THRESHOLD = 0.60
 STEELBALL_NMS_THRESHOLD = 0.45
 STEELBALL_MAX_BOXES_NUM = 50
+
+
+# ------------------------------------------------------------
+# 按需拍照保存（capture.py）
+# ------------------------------------------------------------
+
+CAPTURE_SAVE_DIR = "/sdcard/pic"
+CAPTURE_FILE_PREFIX = "cap"
+CAPTURE_FILE_SUFFIX = ".jpg"
+CAPTURE_JPEG_QUALITY = 95
+CAPTURE_MAX_PENDING = 20
+CAPTURE_MESSAGE_REQUEST = 0x20
+CAPTURE_MESSAGE_ACK = 0x21
+CAPTURE_WARMUP_FRAMES = 30
