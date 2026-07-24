@@ -822,7 +822,7 @@ def run_pencil_rectangle_demo(
     import sys
 
     from core.camera_io import CameraIO
-    from detectors.corner_cycle import (
+    from detectors.rectangle_corner_cycle import (
         CORNER_HOLD_MS,
         CORNER_MOVE_MS,
         CORNER_NAMES,

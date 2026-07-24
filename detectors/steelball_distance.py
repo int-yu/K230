@@ -5,7 +5,7 @@
     distance_cm = real_diameter_cm * focal_px / pixel_diameter
 
 钢球直径已知为 1 cm，因此只需要 YOLO 检测框的像素直径和相机焦距即可估算
-距离。检测、模型路径、显示和 Sensor 配置全部复用 detectors.steelball_detect。
+距离。检测、模型路径、显示和 Sensor 配置全部复用 detectors.steelball。
 """
 
 import gc
@@ -19,7 +19,7 @@ for _path in ("/sdcard/K230", "/sdcard"):
         sys.path.append(_path)
 
 from core.draw_utils import draw_osd_status, draw_osd_text
-from detectors.steelball_detect import (
+from detectors.steelball import (
     PipeLine,
     YOLO11,
     _apply_sensor_orientation,

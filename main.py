@@ -5,7 +5,7 @@
 便于单独测试。
 """
 
-from detectors.tangle import run_rectangle_tracking
+from detectors.rectangle import run_rectangle_tracking
 
 
 run_rectangle_tracking()
