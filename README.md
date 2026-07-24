@@ -21,6 +21,7 @@
 | `detectors/tangle.py` | 黑框白心方框检测，导出 `RectangleDetector`；直接运行时也是完整追踪程序 |
 | `detectors/pencil_rectangle.py` | 细铅笔线方框检测，导出 `PencilRectangleDetector`；多重方框中选择估算边框最细者 |
 | `detectors/corner_cycle.py` | 独立的方框四角顺时针停留、移动和串口输出应用 |
+| `detectors/square_distance.py` | 复用 `RectangleDetector` 检测方框，并用 cv2/PnP 估算距离 |
 | `detectors/num.py` | 打印数字检测，导出 `DigitDetector`；直接运行时也是完整识别程序 |
 | `tools/capture.py` | 按需拍照并保存到 TF 卡，导出 `CaptureService`；直接运行时等待 CAPTURE 帧并存图 |
 | `assets/` | 数字模板、KPU/kmodel 等资源文件 |
@@ -37,6 +38,7 @@ from detectors.road import RoadSymbolDetector
 from detectors.line import LineTrackDetector
 from detectors.tangle import RectangleDetector
 from detectors.pencil_rectangle import PencilRectangleDetector
+from detectors.square_distance import SquareDistanceDetector
 from detectors.num import DigitDetector
 
 # 主循环外初始化一次。数字模板也只会在这里加载一次。
@@ -45,6 +47,7 @@ road_detector = RoadSymbolDetector()
 line_detector = LineTrackDetector()
 rectangle_detector = RectangleDetector()
 pencil_rectangle_detector = PencilRectangleDetector()
+square_distance_detector = SquareDistanceDetector()
 digit_detector = DigitDetector()
 
 # 获取 frame 后调用；process 默认会在 frame 上绘图。
@@ -53,6 +56,7 @@ road_result = road_detector.process(frame)
 line_result = line_detector.process(frame)
 rectangle = rectangle_detector.process(frame)
 pencil_rectangle = pencil_rectangle_detector.process(frame)
+square_distance = square_distance_detector.process(frame)
 digit_result = digit_detector.process(frame)
 ```
 
@@ -551,6 +555,42 @@ tracking_uart.send_target(
 | `source` | 候选来源，`bright` 或 `canny` |
 
 `RectangleDetector` 每帧独立检测，不使用历史位置、ROI 或运动预测。`detectors/tangle.py` 直接运行时的 `TargetHoldState` 只服务于示例画面显示，不属于检测器，也不会把历史坐标作为有效串口数据发送。
+
+## 方框 PnP 距离检测模块
+
+`SquareDistanceDetector` 复用 `detectors.tangle.RectangleDetector` 获取方框四角，然后估算相机到方框中心的距离。测距优先调用 `cv2.solvePnP`；如果当前 CanMV 固件没有暴露该函数，则使用模块内置的平面矩形 homography 后备算法。
+
+```python
+from detectors.square_distance import SquareDistanceDetector
+
+distance_detector = SquareDistanceDetector()
+result = distance_detector.process(frame)
+
+if result is not None:
+    distance_cm = result["distance_cm"]
+    points = result["points"]       # 左上、右上、右下、左下
+    rect = result["rect"]           # (x, y, w, h)
+    method = result["pnp_method"]   # cv2.solvePnP 或 planar_homography
+```
+
+直接运行 `detectors/square_distance.py` 会启动摄像头演示，并绘制：
+
+- 配置中的搜索 ROI；
+- `RectangleDetector` 返回的方框和四个角点；
+- 距离、PnP 方法和 FPS。
+
+距离精度主要取决于 `config.py` 中这些参数：
+
+| 参数 | 含义 |
+| --- | --- |
+| `SQUARE_DISTANCE_ROI` | 只接受中心点落入该区域的方框，格式为 `(x0, y0, x1, y1)` 画面比例 |
+| `SQUARE_DISTANCE_OBJECT_WIDTH_CM` | 实物方框宽度，单位 cm |
+| `SQUARE_DISTANCE_OBJECT_HEIGHT_CM` | 实物方框高度，单位 cm |
+| `SQUARE_DISTANCE_CAMERA_MATRIX` | 相机内参矩阵，当前使用 01Studio K230 官方 PnP 示例参数 |
+| `SQUARE_DISTANCE_DIST_COEFFS` | 畸变系数 |
+| `SQUARE_DISTANCE_MIN_DISTANCE_CM` | 小于等于该值时视为未检测到有效距离 |
+
+如果返回 `None`，通常是 `RectangleDetector` 没有找到有效方框、方框中心不在 ROI 内，或 PnP 计算失败。画面和终端会输出异常信息，按该信息调整方框检测参数、目标尺寸、ROI 或相机参数。
 
 ## 细铅笔线方框模块
 

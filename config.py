@@ -471,11 +471,58 @@ STEELBALL_KMODEL_PATH_CANDIDATES = (
 # 7839 生成的示例模型只有 1 个类别，类别 id 为 0。
 STEELBALL_LABELS = {0: "steelball"}
 STEELBALL_MODEL_INPUT_SIZE = [320, 320]
-STEELBALL_RGB888P_SIZE = [640, 360]
+STEELBALL_RGB888P_SIZE = [640, 480]
 
 STEELBALL_CONFIDENCE_THRESHOLD = 0.60
 STEELBALL_NMS_THRESHOLD = 0.45
 STEELBALL_MAX_BOXES_NUM = 50
+
+
+# ------------------------------------------------------------
+# 方框 PnP 距离检测演示（square_distance.py）
+# ------------------------------------------------------------
+
+# 在画面内只接受中心点落入该 ROI 的方框，格式为 (x0, y0, x1, y1)，
+# 数值是相对画面宽高的比例。默认全画面。
+SQUARE_DISTANCE_ROI = (0.0, 0.0, 1.0, 1.0)
+
+# PnP 使用的实际方框尺寸，单位 cm。
+# 必须按实物外框角点对应的真实宽高修改，否则距离数值没有实际意义。
+SQUARE_DISTANCE_OBJECT_WIDTH_CM = 29.7
+SQUARE_DISTANCE_OBJECT_HEIGHT_CM = 21.0
+
+# 相机内参矩阵，顺序为：
+# fx, 0, cx,
+# 0, fy, cy,
+# 0, 0, 1
+# 当前使用 01Studio K230 官方 PnP 示例参数；不同镜头或分辨率应重新标定。
+SQUARE_DISTANCE_CAMERA_MATRIX = (
+    789.1207591978101, 0.0, 308.8211709453399,
+    0.0, 784.6402477892891, 220.80604393744628,
+    0.0, 0.0, 1.0,
+)
+SQUARE_DISTANCE_DIST_COEFFS = (
+    -0.0032975761115662697,
+    -0.009984467065645562,
+    -0.01301691382446514,
+    -0.00805834837844004,
+    -1.063818733754765,
+)
+
+# 方框由 detectors.tangle.RectangleDetector 检测；PnP 优先使用 cv2.solvePnP。
+# 如果当前固件没有暴露 cv2.solvePnP，则使用 square_distance.py 内置平面矩形测距。
+SQUARE_DISTANCE_MIN_DISTANCE_CM = 0.0
+
+SQUARE_DISTANCE_DRAW_ROI = True
+SQUARE_DISTANCE_DRAW_RECTANGLE_COLOR = (0, 255, 0)
+SQUARE_DISTANCE_DRAW_ROI_COLOR = (80, 80, 255)
+SQUARE_DISTANCE_DRAW_POINT_COLOR = (255, 255, 0)
+SQUARE_DISTANCE_DRAW_TEXT_COLOR = (255, 255, 255)
+SQUARE_DISTANCE_DRAW_ERROR_COLOR = (255, 0, 0)
+SQUARE_DISTANCE_DRAW_THICKNESS = 2
+SQUARE_DISTANCE_DRAW_POINT_RADIUS = 5
+SQUARE_DISTANCE_DEMO_PRINT_INTERVAL = 10
+SQUARE_DISTANCE_DEMO_GC_INTERVAL = 30
 
 
 # ------------------------------------------------------------
