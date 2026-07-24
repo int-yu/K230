@@ -22,6 +22,8 @@
 | `detectors/pencil_rectangle.py` | 细铅笔线方框检测，导出 `PencilRectangleDetector`；多重方框中选择估算边框最细者 |
 | `detectors/corner_cycle.py` | 独立的方框四角顺时针停留、移动和串口输出应用 |
 | `detectors/square_distance.py` | 复用 `RectangleDetector` 检测方框，并用 cv2/PnP 估算距离 |
+| `detectors/steelball_detect.py` | KPU/YOLO11 钢球检测演示，绘制检测框、FPS 和数量 |
+| `detectors/steelball_distance.py` | 复用钢球 YOLO11 检测框，根据 1cm 直径估算钢球距离 |
 | `detectors/num.py` | 打印数字检测，导出 `DigitDetector`；直接运行时也是完整识别程序 |
 | `tools/capture.py` | 按需拍照并保存到 TF 卡，导出 `CaptureService`；直接运行时等待 CAPTURE 帧并存图 |
 | `assets/` | 数字模板、KPU/kmodel 等资源文件 |
@@ -39,6 +41,7 @@ from detectors.line import LineTrackDetector
 from detectors.tangle import RectangleDetector
 from detectors.pencil_rectangle import PencilRectangleDetector
 from detectors.square_distance import SquareDistanceDetector
+from detectors.steelball_distance import estimate_steelball_distance
 from detectors.num import DigitDetector
 
 # 主循环外初始化一次。数字模板也只会在这里加载一次。
@@ -591,6 +594,37 @@ if result is not None:
 | `SQUARE_DISTANCE_MIN_DISTANCE_CM` | 小于等于该值时视为未检测到有效距离 |
 
 如果返回 `None`，通常是 `RectangleDetector` 没有找到有效方框、方框中心不在 ROI 内，或 PnP 计算失败。画面和终端会输出异常信息，按该信息调整方框检测参数、目标尺寸、ROI 或相机参数。
+
+## 钢球距离判断模块
+
+`detectors/steelball_distance.py` 复用 `detectors/steelball_detect.py` 的 YOLO11 模型加载、显示配置、摄像头配置和检测结果解析。距离估算不使用 PnP，而是使用已知钢球直径：
+
+```text
+distance_cm = STEELBALL_REAL_DIAMETER_CM * focal_px / pixel_diameter
+```
+
+直接运行：
+
+```python
+from detectors.steelball_distance import run_steelball_distance
+
+run_steelball_distance()
+```
+
+主要参数在 `config.py`：
+
+| 参数 | 含义 |
+| --- | --- |
+| `STEELBALL_REAL_DIAMETER_CM` | 钢球实际直径，默认 1.0 cm |
+| `STEELBALL_MAX_ASPECT_RATIO` | 钢球检测框最大宽高比，用于过滤明显不是圆形钢球的误检 |
+| `STEELBALL_DISTANCE_FOCAL_X` / `STEELBALL_DISTANCE_FOCAL_Y` | 用于单目测距的焦距像素值 |
+| `STEELBALL_DISTANCE_DIAMETER_MODE` | 像素直径取值方式：`mean` / `min` / `width` / `height` |
+| `STEELBALL_DISTANCE_CALIBRATION_SCALE` | 实测距离校准系数，默认 1.0 |
+| `STEELBALL_DISTANCE_MIN_PIXEL_DIAMETER` | 检测框过小时不估算距离 |
+| `STEELBALL_DISTANCE_USE_SMOOTHING` | 是否启用距离 EMA 平滑 |
+| `STEELBALL_DISTANCE_DEBUG_PRINT` / `STEELBALL_DISTANCE_DEBUG_RAW` | 打印框宽高、像素直径、横纵距离和原始 YOLO 返回值，便于排查距离不准 |
+
+`detectors/steelball_detect.py` 的数量统计也改为先把 YOLO 返回值标准化为真实检测框列表，再统计长度；不再把未知容器长度兜底当作数量，避免左上角固定显示 `Num: 2` 或 `Num: 3`。
 
 ## 细铅笔线方框模块
 
